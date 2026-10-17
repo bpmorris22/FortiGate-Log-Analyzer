@@ -145,6 +145,7 @@
     <span class="muted" id="inInfo" style="font-size:11px;margin-left:6px"></span>
     <label class="fld" title="Required before processing. Filled from the logs' devname= field when they carry one (GUI downloads usually do not) - otherwise type the firewall's name.">Target hostname (required) - the firewall's name; names the output folder _Processed\&lt;host&gt;\FortiGate-Log-Triage next to this app</label>
     <input class="txt" id="hostName" value="" style="width:260px" placeholder="e.g. FGT-EDGE-01">
+    <span id="hostHint" class="maxwarn hide"></span>
     <label class="fld">Output directory</label>
     <input class="txt wide" id="outDir" value="">
     <button class="btn" id="openDirBtn">Open folder</button>
@@ -1000,7 +1001,7 @@ function bootLog(msg){
 window.onerror=function(msg,url,line){ bootLog("ONERROR line "+line+": "+msg); return false; };
 bootLog("script top-level reached");
 
-var APP_VERSION = "0.1.0";
+var APP_VERSION = "0.1.1";
 var APP_NAME = "FortiGate-Log-Triage";
 var MAXROWS = 6000;
 var DATA = null;                 // the loaded engine JSON
@@ -1134,8 +1135,38 @@ function defaultOutDir(){
 }
 function syncOutDir(){ if(OUT_TOUCHED) return; var d=defaultOutDir(); if(d) $("outDir").value=d; }
 function hostGuessFrom(p){
-  if(!HOST_LOCK && (!HOST_TOUCHED || !trimStr($("hostName").value))){ var g=guessHost(p); if(!g) g=peekDevname(p); if(g) $("hostName").value=sanitHost(g); }
+  var logName=logHostname(p);
+  if(!HOST_LOCK && (!HOST_TOUCHED || !trimStr($("hostName").value))){ var g=guessHost(p); if(!g) g=logName.name; if(g) $("hostName").value=sanitHost(g); }
+  hostHint(logName.name, logName.src);
   syncOutDir();
+}
+/* amber chip beside the hostname box when the logs name the firewall differently from what is typed */
+var LOGHOST={name:"", src:""};
+function hostHint(name, src){
+  LOGHOST={name:name||"", src:src||""};
+  var cur=sanitHost($("hostName").value), h=sanitHost(name||"");
+  if(!h || h.toLowerCase()===cur.toLowerCase()){ showEl("hostHint",false); return; }
+  $("hostHint").innerHTML='The logs name this firewall <b>'+esc(h)+'</b> ('+esc(src)+') - <span class="lnk" data-usehost="'+esc(h)+'">use it</span>';
+  $("hostHint").title="Found in the logs: "+src+". Click 'use it' to name the output folder after it.";
+  showEl("hostHint",true);
+}
+/* the firewall's own name, read from the logs before processing:
+   1. devname= on the first line (syslog / FortiAnalyzer exports always carry it; GUI downloads usually do not)
+   2. the system event "changed hostname global setting to <name>" - FortiOS logs it when the hostname is set,
+      including the config load at boot, so a System log that spans a reboot names the box (findstr - fast at any size) */
+function logHostname(p){
+  var d=peekDevname(p); if(d) return {name:d, src:"devname="};
+  var c=candidateFiles(p, 60), best="", bestKey="";
+  for(var i=0;i<c.length;i++){
+    if(/\.gz$/i.test(c[i])) continue;
+    var s=peekLine(c[i]); if(!(/type="?event/.test(s) && /subtype="?system/.test(s)) && !/system|event/i.test(baseName(c[i]))) continue;
+    var r=runBat(['findstr /c:"hostname global setting to" "'+batEsc(c[i])+'" > "__LOG__" 2>&1']);
+    var lines=String(r.log).split(/\r?\n/);
+    for(var j=0;j<lines.length;j++){ var m=lines[j].match(/hostname global setting to "?([^"\s]+)/); if(!m) continue;
+      var k=lines[j].match(/date=(\S+) time=(\S+)/), key=k?(k[1]+" "+k[2]):"";
+      if(!best || key>bestKey){ best=m[1]; bestKey=key; } }
+  }
+  return best ? {name:best, src:"hostname setting event"+(bestKey?(" "+bestKey.replace(/"/g,"")+" device time"):"")} : {name:"", src:""};
 }
 function requireHost(){
   var h=sanitHost($("hostName").value);
@@ -1193,8 +1224,30 @@ function applyIocs(quiet){
   var parts=String($("iocBox").value).split(/[\r\n,;]+/), out=[];
   for(var i=0;i<parts.length;i++){ var s=trimStr(parts[i]).toLowerCase(); if(s && s.charAt(0)!=="#" && s.length>=3) out.push(s); }
   IOCS=out; $("iocInfo").innerHTML=IOCS.length?(nf(IOCS.length)+" term(s) active"):"no terms";
-  if(DATA){ computeFlags(); renderAll(); }
-  if(quiet!==true) setStatus(IOCS.length?("IOC list applied - "+IOCS.length+" term(s). Re-process to sweep the raw log lines for them."):"IOC list cleared","ok");
+  if(DATA){ computeFlags(); buildFindings(); renderAll(); }
+  if(quiet===true) return;
+  if(!IOCS.length){ setStatus("IOC list cleared","ok"); return; }
+  var miss=unsweptTerms(), vt=TABLES.ioc_view?TABLES.ioc_view.total:0;
+  if(DATA && miss.length){
+    setStatus("IOC list applied - "+nf(vt)+" matching row(s) in the tables (IOC hits > Matches in tables). "+miss.length+" term(s) were not in this run's raw-line sweep.","ok");
+    if(!BUSY && confirm("Sweep the raw log lines for the new IOC term(s) too?\n\n"+miss.join("\n")+"\n\nThe tables only hold aggregates; the raw-line sweep finds every matching line (with the full line). This re-processes the input (about 15 s per GB) and writes a new run."))
+      resweep();
+  } else setStatus(DATA?("IOC list applied - "+nf(vt)+" matching row(s) in the tables; every term was in the raw-line sweep."):("IOC list set - "+IOCS.length+" term(s); every raw log line is swept for them when you process."),"ok");
+}
+/* terms in the IOC box that the loaded run's raw-line sweep did not include */
+function unsweptTerms(){
+  if(!DATA) return []; var had={}, out=[], i, s=DATA.iocTerms||[];
+  for(i=0;i<s.length;i++) had["#"+s[i]]=1;
+  for(i=0;i<IOCS.length;i++) if(!had["#"+IOCS[i]]) out.push(IOCS[i]);
+  return out;
+}
+/* re-process the loaded run's input with the current IOC list (the input / host / output fields are reused) */
+function resweep(){
+  if(BUSY){ setStatus("A run is already in progress","err"); return; }
+  if(!trimStr($("inPath").value) && DATA && DATA.input) $("inPath").value=DATA.input;
+  if(!trimStr($("hostName").value) && DATA && DATA.host){ $("hostName").value=DATA.host; syncOutDir(); }
+  if(!trimStr($("inPath").value)){ setStatus("Set the input folder first (this run was loaded without one)","err"); return; }
+  VIEW="ioc"; SUB="ioc_terms"; processRun();
 }
 
 /* ---------- run provenance (family) ---------- */
@@ -1282,6 +1335,8 @@ function loadJson(path){
     for(var c=0;c<t.cols.length;c++) ix[t.cols[c]]=c;
     TABLES[name]={name:name, cols:t.cols, rows:t.rows, total:t.total, ix:ix, flags:[]}; }
   if(!trimStr($("hostName").value) && obj.host) $("hostName").value=obj.host;
+  /* the engine records devname= values and hostname-setting events in the devices table - offer them if they differ */
+  var dt=TABLES.devices; if(dt){ for(var di=0;di<dt.rows.length;di++){ var dn=dt.rows[di][dt.ix["DevName"]]; if(dn){ hostHint(dn, String(dt.rows[di][dt.ix["DevID"]]).indexOf("hostname setting")>=0?"hostname setting event":"devname="); break; } } }
   computeFlags(); buildFindings();
   $("srcpill").innerHTML=esc(obj.host)+" &middot; "+nf(obj.parsed)+" lines"; $("srcpill").title=obj.input;
   showEl("results",true);
@@ -1362,6 +1417,7 @@ var RULES={
   utm_other:function(t,r,T){ if(/anomaly|dlp/i.test(v(t,r,"Type"))) T.push([2,"ANOMALY"]); if(MAL_CAT_RE.test(v(t,r,"Category_Severity"))) T.push([2,"BAD-CATEGORY"]); },
   ioc_terms:function(t,r,T){ T.push([3,"IOC"]); },
   ioc_hits:function(t,r,T){ T.push([3,"IOC"]); },
+  ioc_view:function(t,r,T){ T.push([3,"IOC"]); },
   timeline:function(t,r,T){ var s=v(t,r,"Severity"); if(s==="high") T.push([3,v(t,r,"Category").toUpperCase()]); else if(s==="med") T.push([2,v(t,r,"Category").toUpperCase()]); }
 };
 var SSL_HOME="";
@@ -1376,13 +1432,23 @@ function computeFlags(){
   /* SSL-VPN "home" country = where most successful logins come from - logins elsewhere get UNUSUAL-COUNTRY */
   SSL_HOME=""; var t=TABLES.vpn_ssl;
   if(t){ var cc={}, best=0; for(var i=0;i<t.rows.length;i++){ var c=v(t,t.rows[i],"Country"), up=n(t,t.rows[i],"TunnelUp"); if(c&&up){ cc["#"+c]=(cc["#"+c]||0)+up; if(cc["#"+c]>best){ best=cc["#"+c]; SSL_HOME=c; } } } }
+  delete TABLES.ioc_view;
+  /* viewer-side IOC matches: every table row containing a term, gathered on the IOC tab - works the moment
+     the list is applied, without the raw-line sweep (which only runs at processing time) */
+  var mrows=[], mflags=[];
   for(var name in TABLES){ if(!TABLES.hasOwnProperty(name)) continue; var tb=TABLES[name], rule=RULES[name]; tb.flags=[]; tb.nflag=0;
+    var tix=tb.ix["Time_UTC"]!=null?tb.ix["Time_UTC"]:tb.ix["First_UTC"], lix=tb.ix["Last_UTC"];
     for(var r=0;r<tb.rows.length;r++){ var T=[], row=tb.rows[r];
       if(rule){ try{ rule(tb,row,T); }catch(e){} }
-      if(IOCS.length){ var txt=row.join(" | ").toLowerCase(); for(var k=0;k<IOCS.length;k++){ if(txt.indexOf(IOCS[k])>=0){ T.push([3,"IOC:"+IOCS[k]]); break; } } }
+      if(IOCS.length){ var txt=row.join(" | ").toLowerCase(); for(var k=0;k<IOCS.length;k++){ if(txt.indexOf(IOCS[k])>=0){ T.push([3,"IOC:"+IOCS[k]]);
+        if(!/^ioc_/.test(name) && mrows.length<MAXROWS){ mrows.push([IOCS[k], tabLabel(name), name, tix!=null?row[tix]:"", lix!=null?row[lix]:"", clip(row.join(" | "),700)]); mflags.push({s:3,t:[[3,"IOC:"+IOCS[k]]]}); }
+        break; } } }
       var s=0; for(var j=0;j<T.length;j++) if(T[j][0]>s) s=T[j][0];
       tb.flags.push({s:s, t:T}); if(s>=2) tb.nflag++; } }
+  if(IOCS.length){ var vc=["Term","Tab","Table","First_UTC","Last_UTC","Row"], vix={}; for(var c=0;c<vc.length;c++) vix[vc[c]]=c;
+    TABLES.ioc_view={name:"ioc_view", cols:vc, rows:mrows, total:mrows.length, ix:vix, flags:mflags, nflag:mrows.length}; }
 }
+function tabLabel(name){ for(var i=0;i<VIEWS.length;i++){ var s=VIEWS[i].subs||[]; for(var j=0;j<s.length;j++) if(s[j][0]===name) return VIEWS[i].label+" > "+s[j][1]; } return name; }
 
 /* ---------- findings (Overview) ---------- */
 function tbl(name){ return TABLES[name]||{rows:[],cols:[],ix:{},flags:[],total:0,nflag:0}; }
@@ -1462,6 +1528,10 @@ function buildFindings(){
   /* IOC */
   t=tbl("ioc_terms"); if(t.total){ var it=[]; for(i=0;i<t.rows.length;i++) it.push(v(t,t.rows[i],"Term")+" ("+nf(n(t,t.rows[i],"Hits"))+")"); addF(4,"IOC hits in the raw logs: "+topList(it,6),"Matching lines (with the full raw line) are on the IOC hits tab.","ioc","ioc_terms",""); }
   else if((DATA.iocTerms||[]).length) addF(0,"IOC sweep: "+DATA.iocTerms.length+" term(s) checked against every line - no hits","","ioc","ioc_terms","");
+  t=tbl("ioc_view"); if(t.total){ var byT={}, tl2=[]; for(i=0;i<t.rows.length;i++){ var tm=t.rows[i][0]; byT["#"+tm]=(byT["#"+tm]||0)+1; }
+    for(var bk in byT) if(byT.hasOwnProperty(bk)) tl2.push(bk.substring(1)+" ("+byT[bk]+" row"+(byT[bk]===1?"":"s")+")");
+    var um=unsweptTerms();
+    addF(4,"IOC terms found in the result tables: "+topList(tl2,6),"Rows from every tab that contain an IOC term are gathered on IOC hits > Matches in tables."+(um.length?(" "+um.length+" term(s) were added after processing, so the raw-line sweep has not covered them yet - re-process (Apply offers it) for every matching raw line."):""),"ioc","ioc_view",""); }
   FINDINGS.sort(function(a,b){ return b.s-a.s; });
 }
 
@@ -1474,7 +1544,7 @@ var VIEWS=[
   {id:"usr", label:"User auth", subs:[["user_auth","By user"],["user_auth_fail_src","Failures by source"]]},
   {id:"trf", label:"Traffic", subs:[["traffic_public_dst","Internet destinations"],["traffic_internal_src","Internal sources"],["traffic_inbound_src","Inbound from Internet"],["traffic_exposed","Allowed inbound"],["traffic_lateral","Lateral (admin ports)"],["traffic_services","Ports & services"],["traffic_big_sessions","Largest uploads"],["traffic_actions","Actions"]]},
   {id:"utm", label:"Security profiles", subs:[["utm_av","Antivirus"],["utm_ips","IPS"],["utm_app","Application control"],["utm_web","Web filter by site"],["utm_web_categories","Web filter categories"],["utm_ssl","SSL inspection"],["utm_other","Other (DNS, anomaly, DLP)"]]},
-  {id:"ioc", label:"IOC hits", subs:[["ioc_terms","By term"],["ioc_hits","Matching lines"]]},
+  {id:"ioc", label:"IOC hits", subs:[["ioc_terms","Raw-line sweep by term"],["ioc_hits","Raw-line matches"],["ioc_view","Matches in tables"]]},
   {id:"tl", label:"Timeline", subs:[["timeline","Notable events"]]},
   {id:"src", label:"Sources", subs:[["files","Files"],["coverage","Coverage by log type"],["coverage_days","Lines per day"],["devices","Devices"]]}
 ];
@@ -1498,7 +1568,9 @@ var TABLE_NOTES={
 function viewOf(id){ for(var i=0;i<VIEWS.length;i++) if(VIEWS[i].id===id) return VIEWS[i]; return VIEWS[0]; }
 function setViewTab(id){
   VIEW=id; var vw=viewOf(id);
-  if(vw.subs){ var ok=false; for(var i=0;i<vw.subs.length;i++) if(vw.subs[i][0]===SUB) ok=true; if(!ok) SUB=vw.subs[0][0]; }
+  if(vw.subs){ var ok=false; for(var i=0;i<vw.subs.length;i++) if(vw.subs[i][0]===SUB) ok=true;
+    if(!ok){ SUB=vw.subs[0][0];   // first sub that has rows (IOC tab: table matches when the raw sweep found nothing)
+      for(var k=0;k<vw.subs.length;k++){ var tk=TABLES[vw.subs[k][0]]; if(tk && tk.total){ SUB=vw.subs[k][0]; break; } } } }
   renderAll();
 }
 function renderBars(){
@@ -1586,7 +1658,12 @@ function renderTable(){
   if(!t){ $("tableTitle").innerHTML=esc(SUB)+" - not in this run"; $("tbl").innerHTML=""; $("count").innerHTML=""; $("tblNote").innerHTML=""; return; }
   var vw=viewOf(VIEW), label=SUB; for(var i=0;i<(vw.subs||[]).length;i++) if(vw.subs[i][0]===SUB) label=vw.subs[i][1];
   $("tableTitle").innerHTML=esc(vw.label)+" &rsaquo; "+esc(label);
-  $("tblNote").innerHTML=esc(TABLE_NOTES[SUB]||"");
+  var note=esc(TABLE_NOTES[SUB]||"");
+  if(/^ioc_/.test(SUB)){ var sw=DATA.iocTerms||[], um=unsweptTerms();
+    note+=(note?" ":"")+(sw.length?("Raw-line sweep in this run: "+esc(sw.join(", "))+"."):"This run was processed with no IOC list, so the raw-line sweep is empty.")+
+      (um.length?(' <span class="warn">Not swept yet: '+esc(um.join(", "))+'</span> - <span class="lnk" data-resweep="1">re-sweep the raw logs now</span>.'):"")+
+      (IOCS.length?"":" Add terms with IOC / keywords&hellip; (matches in the tables appear at once; the raw-line sweep runs at processing)."); }
+  $("tblNote").innerHTML=note;
   var idx=viewRows(t), so=SORTS[t.name]||{};
   var h="<thead><tr><th data-k=\"-2\">Flags"+(so.k===-2?(so.dir>0?" \u25B2":" \u25BC"):"")+"</th>";
   for(var c=0;c<t.cols.length;c++){ h+='<th data-k="'+c+'">'+esc(t.cols[c].replace(/_UTC$/," (UTC)"))+(so.k===c?(so.dir>0?" \u25B2":" \u25BC"):"")+'</th>'; }
@@ -1691,7 +1768,7 @@ function init(){
   try{ document.title="FortiGate Log Triage v"+APP_VERSION; }catch(e){}
   $("tblScroll").onscroll=applyFreeze;
   loadSettings();
-  $("hostName").onkeyup=function(){ HOST_TOUCHED=true; HOST_LOCK=false; syncOutDir(); };
+  $("hostName").onkeyup=function(){ HOST_TOUCHED=true; HOST_LOCK=false; syncOutDir(); hostHint(LOGHOST.name, LOGHOST.src); };
   $("outDir").onkeyup=function(){ OUT_TOUCHED=true; };
   loadToolkitIoc();
 
@@ -1745,6 +1822,9 @@ function init(){
     var fi=t&&t.getAttribute?t.getAttribute("data-fi"):null;
     if(fi!=null && fi!==""){ var f=FINDINGS[parseInt(fi,10)]; if(f && f.view){ SUB=f.sub; FLAGONLY=false; $("fAll").className="btn sm on"; $("fFlag").className="btn sm";
       if(f.q){ $("q").value=f.q; QUERY=f.q.toLowerCase(); } setViewTab(f.view); } return; }
+    if(t && t.getAttribute && t.getAttribute("data-resweep")){ resweep(); return; }
+    if(t && t.getAttribute && t.getAttribute("data-usehost")){ $("hostName").value=t.getAttribute("data-usehost"); HOST_TOUCHED=true; HOST_LOCK=false; syncOutDir(); showEl("hostHint",false);
+      setStatus("Hostname set to "+$("hostName").value+(DATA?" - re-process to write the run under this name.":""),"ok"); return; }
     var q=t&&t.getAttribute?t.getAttribute("data-q"):null;
     if(q){ $("q").value=q; QUERY=q.toLowerCase(); renderTable(); return; }
     if(VIEW==="ov") return;
@@ -1876,7 +1956,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
     <h3>Quick start</h3>
     <ul>
       <li>Point the input at the folder of exported logs (any mix of Forward / Local / System / User / VPN / AV / IPS / App-control / Web-filter / SSL / DNS logs; every file is sniffed, non-FortiGate files are skipped) or at one file.</li>
-      <li>Type the firewall's name in <b>Target hostname</b> (filled automatically when the logs carry <code>devname=</code>), then <b>Process &rarr; analyze</b>. About 15 seconds per GB.</li>
+      <li>Check <b>Target hostname</b>, then <b>Process &rarr; analyze</b> (about 15 seconds per GB). The name is read from the logs when they carry it: <code>devname=</code> (syslog / FortiAnalyzer exports), or - for GUI downloads, which omit it - the System log's "changed hostname global setting to &hellip;" event, which FortiOS writes when the name is set and at every boot. If you typed something else, an amber chip offers the logged name.</li>
       <li>Start on <b>Overview</b>: the findings list is generated from every table; click one to open the table behind it. Then work the tabs.</li>
       <li><b>Load existing run (.json)&hellip;</b> reopens a previous run instantly (no reprocessing).</li>
     </ul>
@@ -1888,7 +1968,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>User auth</b> - firewall user authentication (captive portal / LDAP / FSSO) per user, and failures per source (spraying).</li>
       <li><b>Traffic</b> - Internet destinations, internal sources, inbound from the Internet, what accepted inbound sessions (exposure), internal admin-port fan-out (lateral movement), ports &amp; services, the largest single uploads. Direction comes from the interface roles (lan / wan) so VPN overlays with odd addressing are classified correctly.</li>
       <li><b>Security profiles</b> - antivirus detections, IPS, application control (remote-access tools flagged), web filter by site and category, SSL inspection anomalies, other UTM.</li>
-      <li><b>IOC hits</b> - with an IOC list set before processing, every raw line is swept (whole-token match) and each hit keeps the full line.</li>
+      <li><b>IOC hits</b> - two layers. <b>Raw-line sweep</b>: with an IOC list set before processing, every raw log line is swept (whole-token match) and each hit keeps the full line. <b>Matches in tables</b>: terms applied at any time - including after processing - immediately gather every result-table row that contains them. When you Apply terms the run was not swept for, the app offers to re-sweep the raw logs.</li>
       <li><b>Timeline</b> - admin sessions, config changes, VPN logins, AV / IPS / app-control first sightings and IOC hits on one stream. <b>Sources</b> - files read, coverage per log type, lines per day, device names.</li>
     </ul>
     <h3>Flags (rules live in the app, so they change without reprocessing)</h3>
