@@ -1,0 +1,1918 @@
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="x-ua-compatible" content="IE=edge">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>FortiGate Log Triage</title>
+<HTA:APPLICATION
+  ID="fgHta"
+  APPLICATIONNAME="FortiGate Log Triage"
+  BORDER="thick"
+  CAPTION="yes"
+  SCROLL="auto"
+  SINGLEINSTANCE="yes"
+  SHOWINTASKBAR="yes"
+  MAXIMIZEBUTTON="yes"
+  MINIMIZEBUTTON="yes"
+  INNERBORDER="no"
+  CONTEXTMENU="yes"
+  SELECTION="yes" />
+<!--
+  FortiGate-Log-Triage - FortiGate / FortiOS log triage for the DFIR toolkit (github.com/bpmorris22/FortiGate-Log-Triage-Tool).
+  Reads FortiOS key=value logs exactly as they come off the appliance (GUI Log & Report "Download" .log files,
+  syslog captures, FortiAnalyzer raw exports; plain or .gz) - one folder of mixed log types or single files.
+
+  Hybrid, like MFTECmd-Wrapper: this HTA is the launcher + viewer. The engine (FortiGate-Engine.ps1, embedded
+  below as a text/plain payload) is written next to the output and run by PowerShell; its C# core (Add-Type)
+  streams every line once (~1 GB / 1.3M lines in ~15 s) and writes:
+    <outDir>\<host>-FortiGate-<stamp>.json    every table, capped at 6000 rows each - what this viewer loads
+    <outDir>\<stamp>_<table>.csv              every table in full (Open full CSV)
+  Rules (flags, findings) live HERE, not in the engine, so they can change without reprocessing.
+  Times: FortiOS eventtime (epoch, UTC) wins; date+time+tz is the fallback. Everything shown is UTC.
+-->
+<style>
+  html{margin:0;height:100%;background:#0d1117}
+  body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px;overflow-x:hidden}   /* wide tables scroll inside .scroll - the page itself never needs a horizontal bar */
+  #content{zoom:0.9;width:111.111%;box-sizing:border-box}
+  a{color:#58a6ff}
+  .mono{font-family:Consolas,"Courier New",monospace}
+  .muted{color:#8b949e}
+  .err{color:#f85149}
+  .ok{color:#3fb950}
+  .warn{color:#e3b341}
+  header{padding:8px 14px;background:#161b22;border-bottom:1px solid #30363d}
+  header h1{display:inline-block;font-size:15px;margin:0;font-weight:600;vertical-align:middle}
+  header h1 small{color:#8b949e;font-weight:400}
+  .pill{display:inline-block;font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:20px;padding:2px 10px;margin-left:8px;vertical-align:middle}
+  .pill.run{color:#ff8b3d;border-color:#bd561d}
+  .pill.err{color:#ff8b8b;border-color:#b02020}
+  .pill.ok{color:#7ee787;border-color:#2ea043}
+  .pill.bad{color:#ff8b3d;border-color:#bd561d}
+  .wrap{padding:12px 14px}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
+  .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  label.fld{display:block;margin:6px 0 2px;font-size:11px;color:#8b949e}
+  input.txt,select,textarea{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 8px;font-size:13px;font-family:Consolas,monospace}
+  input.wide{width:62%}
+  .btn{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;margin:2px}
+  .btn:hover{border-color:#58a6ff}
+  .btn.primary{background:#1f6feb;border-color:#1f6feb}
+  .btn.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  .btn.sm{padding:3px 9px;font-size:12px}
+  .btn .cnt{color:#8b949e;font-size:11px;margin-left:4px}
+  .btn.on .cnt{color:#cfe2ff}
+  .btn .fl{color:#ff6b6b;font-size:11px;margin-left:4px;font-weight:700}
+  .row{white-space:nowrap}
+  .chiplab{display:inline-block;width:58px;font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.4px}
+  .stat{display:inline-block;background:#1c2330;border:1px solid #30363d;border-radius:8px;padding:6px 12px;margin:0 6px 6px 0;min-width:70px;vertical-align:top}
+  .stat .n{font-size:17px;font-weight:700;display:block}
+  .stat .l{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:4px 7px;border-bottom:1px solid #30363d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  th{background:#1c2330;cursor:pointer;color:#c9d1d9;position:relative;z-index:3;box-shadow:0 1px 0 #30363d}
+  th:hover{color:#58a6ff}
+  .cgrip{position:absolute;top:0;right:0;width:8px;height:100%;cursor:col-resize;z-index:6}
+  .cgrip:hover{background:#58a6ff;filter:alpha(opacity=45);opacity:.45}
+  td{max-width:380px}
+  td.num{text-align:right;font-family:Consolas,monospace}
+  tr.s3 td{background:#2a1416} tr.s3 td.first{border-left:3px solid #ff6b6b}
+  tr.s2 td{background:#2a2410} tr.s2 td.first{border-left:3px solid #e3b341}
+  tr.s1 td.first{border-left:3px solid #58a6ff}
+  tr.sel td{background:#1c2f4a}
+  .scroll{max-height:56vh;overflow:auto;border:1px solid #30363d;border-radius:8px;width:100%;box-sizing:border-box}
+  .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:600;margin-right:3px}
+  .tag.t3{background:#3a1416;color:#ff6b6b}
+  .tag.t2{background:#3a2d10;color:#e3b341}
+  .tag.t1{background:#10263f;color:#58a6ff}
+  .tag.ioc{background:#3a1416;color:#ff6b6b;border:1px solid #ff6b6b}
+  .sev{display:inline-block;width:62px;text-align:center;font-size:10px;font-weight:700;border-radius:10px;padding:2px 0;margin-right:8px;vertical-align:top}
+  .sev.s4{background:#5a0f14;color:#ffb3b3;border:1px solid #ff6b6b}
+  .sev.s3{background:#3a1416;color:#ff6b6b}
+  .sev.s2{background:#3a2d10;color:#e3b341}
+  .sev.s1{background:#10263f;color:#58a6ff}
+  .sev.s0{background:#21262d;color:#8b949e}
+  .find{padding:7px 0;border-bottom:1px solid #21262d;font-size:13px}
+  .find .ft{font-weight:600}
+  .find .fd{color:#8b949e;font-size:12px;margin:3px 0 0 74px;white-space:normal}
+  .dl{font-family:Consolas,"Courier New",monospace;font-size:12px;max-height:340px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;width:100%;box-sizing:border-box}
+  .dl div{white-space:pre-wrap;word-wrap:break-word;padding:1px 0}
+  .dl b{color:#8b949e;font-weight:400;display:inline-block;min-width:170px}
+  .hl-ioc{color:#ff6b6b;font-weight:700}
+  #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:160px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px;width:100%;box-sizing:border-box}
+  .hide{display:none !important}
+  .lnk{cursor:pointer;color:#58a6ff}
+  .lnk:hover{text-decoration:underline}
+  .sep{display:inline-block;width:1px;height:18px;background:#30363d;margin:0 6px;vertical-align:middle}
+  .cov{display:inline-block;height:10px;background:#1f6feb;border-radius:2px;vertical-align:middle}
+  .covt{display:inline-block;width:300px;height:10px;background:#1c2330;border-radius:2px;vertical-align:middle;position:relative}
+  .modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.66);z-index:1000;overflow:auto}
+  .modal .mcard{max-width:860px;margin:36px auto;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px 22px}
+  .modal h2{margin:0 0 6px;font-size:18px;font-weight:600}
+  .modal h3{margin:12px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  .modal ul{margin:4px 0;padding-left:20px}.modal li{margin:3px 0;font-size:13px}
+  .modal p{font-size:13px;margin:6px 0}
+  .modal code{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}
+  .modal .x{float:right;cursor:pointer;color:#8b949e;font-size:22px;line-height:1}.modal .x:hover{color:#e6edf3}
+  .modal .gh{font-family:Consolas,monospace;font-size:12px}
+  .maxwarn{display:inline-block;color:#e3b341;font-weight:600;cursor:help;border:1px solid #8a7a2a;background:#2a2410;border-radius:10px;padding:1px 8px;font-size:11px;margin-left:6px;vertical-align:middle}
+</style>
+</head>
+<body>
+<header>
+  <h1>FortiGate Log Triage <small>- FortiOS appliance logs: admin access, config, VPN, traffic, security profiles</small></h1>
+  <span class="pill" id="apppill" title="This app's version">app: checking&hellip;</span>
+  <span class="pill" id="srcpill">no data loaded</span>
+  <span style="float:right">
+    <span class="pill" id="procTimer" title="Processing time. Starts when a run begins and stops when the engine finishes." style="min-width:150px;text-align:center;display:inline-block">Idle</span>
+    <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest FortiGate Log Triage manual from GitHub and open it in your browser">Instructions</button>
+    <button class="btn" id="helpBtn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
+    <button class="btn primary hide" id="selfUpd" onclick="doSelfUpdate()" title="A newer version is available on GitHub">Update</button>
+    <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
+    <button class="btn" id="fup" title="Larger text">A+</button>
+  </span>
+</header>
+
+<div class="wrap" id="content">
+
+  <!-- CONTROL PANEL -->
+  <div class="card">
+    <h3>FortiGate Log Triage control panel</h3>
+    <label class="fld" title="A folder of FortiGate logs (searched recursively; every file whose first 8 KB holds FortiOS key=value lines is read - .log, .txt, no extension, .gz), or one log file. Several paths can be separated with |.">Input - a folder of FortiGate log exports, or one log file (.log / .txt / .gz, key=value format)</label>
+    <input class="txt wide" id="inPath" value="">
+    <input type="file" id="inPick" style="display:none">
+    <button class="btn" id="browseBtn">Folder&hellip;</button>
+    <button class="btn" id="browseFileBtn">File&hellip;</button>
+    <span class="muted" id="inInfo" style="font-size:11px;margin-left:6px"></span>
+    <label class="fld" title="Required before processing. Filled from the logs' devname= field when they carry one (GUI downloads usually do not) - otherwise type the firewall's name.">Target hostname (required) - the firewall's name; names the output folder _Processed\&lt;host&gt;\FortiGate-Log-Triage next to this app</label>
+    <input class="txt" id="hostName" value="" style="width:260px" placeholder="e.g. FGT-EDGE-01">
+    <label class="fld">Output directory</label>
+    <input class="txt wide" id="outDir" value="">
+    <button class="btn" id="openDirBtn">Open folder</button>
+    <label class="fld" title="UTC calendar dates, inclusive. Prefilled by the Artifact-Finder / CLI /from: /to:. Always filters the result tables; tick the box to also make the engine skip lines outside the window (smaller, faster, but the aggregates then cover only the window).">Case window (UTC, optional)</label>
+    <input class="txt mono" id="pFrom" placeholder="from YYYY-MM-DD" style="width:140px">
+    <span class="muted">&rarr;</span>
+    <input class="txt mono" id="pTo" placeholder="to YYYY-MM-DD" style="width:140px">
+    <label class="muted" style="font-size:12px;margin-left:8px"><input type="checkbox" id="pWinEngine"> also limit processing to this window</label>
+    <div style="margin-top:10px">
+      <button class="btn primary" id="procBtn">Process &rarr; analyze</button>
+      <button class="btn" id="loadBtn" title="Reload a previous run: pick the &lt;host&gt;-FortiGate-&lt;stamp&gt;.json it wrote">Load existing run (.json)&hellip;</button>
+      <input type="file" id="jsonPick" style="display:none">
+      <span class="sep"></span>
+      <button class="btn" id="iocBtn">IOC / keywords&hellip;</button>
+      <button class="btn" id="logToggle">Show log</button>
+      <span class="muted" id="status" style="margin-left:8px"></span>
+    </div>
+    <div id="iocWrap" class="hide" style="margin-top:8px">
+      <label class="fld">IOC / keyword list - comma or newline separated. At processing time every raw log line is swept for each term (whole-token, case-insensitive: 1.2.3.4 does not match 11.2.3.45) - hits land on the IOC tab with the full line. In the viewer the terms also flag any table row whose text contains them.</label>
+      <textarea id="iocBox" rows="3" style="width:70%;vertical-align:top"></textarea>
+      <button class="btn" id="iocApply">Apply</button>
+      <button class="btn" id="iocLoad">Load file&hellip;</button>
+      <input type="file" id="iocPick" style="display:none">
+      <span class="muted" id="iocInfo" style="font-size:11px"></span>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="results" class="hide">
+    <div class="card">
+      <div class="row" id="viewBar" style="white-space:normal"></div>
+      <div class="row" id="subBar" style="margin-top:6px;white-space:normal"></div>
+    </div>
+
+    <div id="ovPane">
+      <div class="card"><h3 id="ovTitle">Overview</h3><div id="statbar"></div></div>
+      <div class="card"><h3>Findings <span class="muted" style="text-transform:none;letter-spacing:0">- generated from the tables by this app's rules (see Help); click a finding to open its table</span></h3><div id="findings"></div></div>
+      <div class="card"><h3>Log coverage <span class="muted" style="text-transform:none;letter-spacing:0">- what time span each log type actually covers (an export row cap shows up here as a short bar)</span></h3><div id="coverage"></div></div>
+    </div>
+
+    <div class="card hide" id="tblCard">
+      <h3 id="tableTitle">Records</h3>
+      <div class="row" style="margin-bottom:8px">
+        <input class="txt" id="q" placeholder="search all columns&hellip;" style="width:260px">
+        <span class="sep"></span>
+        <button class="btn sm on" id="fAll">All rows</button>
+        <button class="btn sm" id="fFlag">Flagged only</button>
+        <span class="sep"></span>
+        <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:130px" title="Activity window (UTC): an aggregate row passes when its First..Last span overlaps the window; an event row when its time falls inside">
+        <span class="muted">&rarr;</span>
+        <input class="txt mono" id="dto" placeholder="to YYYY-MM-DD" style="width:130px" title="Activity window (UTC): an aggregate row passes when its First..Last span overlaps the window; an event row when its time falls inside">
+        <span class="sep"></span>
+        <button class="btn" id="clearBtn">clear</button>
+        <button class="btn" id="exportBtn" title="Write the rows this view shows (all of them, not just the first 6000 drawn) to a CSV in the output folder">Export view &rarr; CSV</button>
+        <button class="btn" id="fullCsvBtn" title="Open this table's full CSV (the engine writes every row, uncapped)">Open full CSV</button>
+        <button class="btn" id="copyBtn">Copy for case notes</button>
+        <span class="muted" id="count" style="margin-left:8px"></span>
+      </div>
+      <div class="muted" id="tblNote" style="font-size:12px;margin-bottom:6px"></div>
+      <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
+      <div class="muted" style="font-size:11px;margin-top:6px">All timestamps UTC. Shaded rows are flagged by this app's rules (red = high, amber = medium, blue edge = context) - the Flags column says why; see Help for every rule. Click a row for every field. Columns are resizable (drag a header edge; double-click resets). The JSON this viewer loads holds at most 6000 rows per table - Open full CSV has everything.</div>
+    </div>
+
+    <div class="card hide" id="detailCard">
+      <h3>Row detail <span class="lnk" id="detCopy" style="float:right;margin-left:12px">copy row</span><span class="lnk" id="detClose" style="float:right">close &times;</span></h3>
+      <div id="detBody"></div>
+    </div>
+  </div>
+
+</div>
+
+<script type="text/plain" id="ps1Payload">
+# FortiGate-Engine.ps1 - streaming aggregator for FortiGate key=value logs (FortiGate Log Triage).
+# Reads FortiOS logs as they come off the appliance (GUI "Download" .log, syslog capture, FortiAnalyzer raw
+# export; plain or .gz), one pass, and writes:
+#   <OutDir>\<Host>-FortiGate-<Stamp>.json   capped tables (6000 rows each) for the HTA viewer
+#   <OutDir>\<Stamp>_<table>.csv             every table in full
+# The parse/aggregate core is C# (Add-Type): a GB of logs is ~1.3M lines and per-line PowerShell is too slow.
+# Times: eventtime (s / ms / us / ns epoch, all UTC) wins; date+time+tz is the fallback.
+# NB this file is embedded verbatim in FortiGate-Log-Triage.hta - it must never contain a closing script tag.
+param(
+  [Parameter(Mandatory=$true)][string]$InputPath,     # file or folder; several separated by |
+  [Parameter(Mandatory=$true)][string]$OutDir,
+  [Parameter(Mandatory=$true)][string]$TargetHost,
+  [string]$From = "",                                 # yyyy-MM-dd (UTC, inclusive) - lines outside are skipped
+  [string]$To = "",
+  [string]$IocFile = "",
+  [string]$AppVersion = "0.1.0-dev",
+  [string]$Stamp = "",
+  [string]$ProgressFile = ""
+)
+$ErrorActionPreference = 'Stop'
+
+$cs = @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
+using System.Text;
+using System.Globalization;
+
+public class FgAgg {
+  public const int CAP = 500;
+  public long N, First = long.MaxValue, Last = long.MinValue;
+  public long[] C = new long[12];
+  public Dictionary<string,long>[] T = new Dictionary<string,long>[8];
+  public bool[] Over = new bool[8];
+  public string S0 = "", S1 = "", S2 = "", S3 = "", S4 = "";
+  public void Seen(long ms){ N++; Touch(ms); }
+  public void Touch(long ms){ if(ms > 0){ if(ms < First) First = ms; if(ms > Last) Last = ms; } }
+  public void Add(int slot, string v){ Add(slot, v, 1); }
+  public void Add(int slot, string v, long w){
+    if(string.IsNullOrEmpty(v)) return;
+    Dictionary<string,long> d = T[slot];
+    if(d == null){ d = new Dictionary<string,long>(StringComparer.Ordinal); T[slot] = d; }
+    long c;
+    if(d.TryGetValue(v, out c)) d[v] = c + w;
+    else if(d.Count < CAP) d[v] = w;
+    else Over[slot] = true;
+  }
+  public long Distinct(int slot){ return T[slot] == null ? 0 : T[slot].Count; }
+  public string Top(int slot, int k){
+    Dictionary<string,long> d = T[slot];
+    if(d == null || d.Count == 0) return "";
+    List<KeyValuePair<string,long>> l = new List<KeyValuePair<string,long>>(d);
+    l.Sort(delegate(KeyValuePair<string,long> a, KeyValuePair<string,long> b){ int r = b.Value.CompareTo(a.Value); return r != 0 ? r : string.CompareOrdinal(a.Key, b.Key); });
+    StringBuilder sb = new StringBuilder();
+    for(int i = 0; i < l.Count && i < k; i++){ if(sb.Length > 0) sb.Append(", "); sb.Append(l[i].Key); if(d.Count > 1) sb.Append(" (").Append(l[i].Value).Append(")"); }
+    if(l.Count > k) sb.Append(", +").Append(l.Count - k).Append(Over[slot] ? "+" : "").Append(" more");
+    return sb.ToString();
+  }
+  public string List(int slot){
+    Dictionary<string,long> d = T[slot];
+    if(d == null) return "";
+    List<string> l = new List<string>(d.Keys); l.Sort(StringComparer.Ordinal);
+    return string.Join(", ", l.ToArray()) + (Over[slot] ? ", ..." : "");
+  }
+}
+
+public class FgTable {
+  public string Name; public string[] Cols; public List<object[]> Rows = new List<object[]>();
+  public int SortCol = -1; public bool Desc = true; public int SortCol2 = -1;
+  public long Total { get { return Rows.Count; } }
+  public FgTable(string name, int sortCol, params string[] cols){ Name = name; Cols = cols; SortCol = sortCol; }
+  public void Add(params object[] r){ Rows.Add(r); }
+  static int Cmp(object a, object b){
+    if(a is long && b is long) return ((long)a).CompareTo((long)b);
+    string x = a == null ? "" : a.ToString(), y = b == null ? "" : b.ToString();
+    return string.CompareOrdinal(x, y);
+  }
+  public void Sort(){
+    if(SortCol < 0) return;
+    int sc = SortCol, sc2 = SortCol2; bool desc = Desc;
+    Rows.Sort(delegate(object[] a, object[] b){
+      int r = Cmp(a[sc], b[sc]); if(desc) r = -r;
+      if(r == 0 && sc2 >= 0) r = -Cmp(a[sc2], b[sc2]);
+      return r; });
+  }
+}
+
+public class FgEvent { public long Ms; public string Cat, Sev, Summary, Src, User, Detail; }
+
+public static class FgEngine {
+  static Dictionary<string,string> D = new Dictionary<string,string>(64, StringComparer.Ordinal);
+  static void Log(string s){ Console.WriteLine(s); }
+
+  /* ---------------- aggregates ---------------- */
+  static Dictionary<string,FgAgg> FILES, COVER, COVERDAY, ADMSRC, ADMUSR, EVSUM, VPNSSL, VPNIPS, UAUTH, UAUTHSRC,
+    TDST, TSRC, TIN, TEXP, TSVC, TLAT, IPSA, APPA, WEBA, WEBC, SSLA, UTMO, IOCT, DEVS, TRFACT;
+  static List<FgEvent> TL;
+  static List<object[]> ADMSESS, CFG, SYSNOT, VPNEV, AVL, IOCH, BIG;
+  static long BIGMIN = 0;
+  static string[] IOCS = new string[0];
+  static long FROMMS = 0, TOMS = 0;
+  static long LINES = 0, PARSED = 0, SKIPPED = 0, OUTWIN = 0, BYTES = 0;
+  static string CURFILE = "";
+  static int TLCAP = 60000, LISTCAP = 50000;
+
+  static FgAgg Get(Dictionary<string,FgAgg> m, string k){ FgAgg a; if(!m.TryGetValue(k, out a)){ a = new FgAgg(); m[k] = a; } return a; }
+  static string G(string k){ string v; if(D.TryGetValue(k, out v)){ if(v == "N/A" || v == "n/a") return ""; return v; } return ""; }
+  static long L(string k){ string v; long n; if(D.TryGetValue(k, out v) && long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out n)) return n; return 0; }
+  static bool Has(string k){ return D.ContainsKey(k); }
+
+  public static string Ts(long ms){
+    if(ms <= 0 || ms == long.MaxValue || ms == long.MinValue) return "";
+    return new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc).AddMilliseconds(ms).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+  }
+  static long DayKey(long ms){ return ms / 86400000L; }
+
+  /* ---------------- IP helpers ---------------- */
+  public static bool IsPublic(string ip){
+    if(string.IsNullOrEmpty(ip)) return false;
+    if(ip.IndexOf(':') >= 0){
+      string l = ip.ToLowerInvariant();
+      if(l == "::1" || l == "::" || l.StartsWith("fe80") || l.StartsWith("fc") || l.StartsWith("fd") || l.StartsWith("ff")) return false;
+      return true;
+    }
+    string[] p = ip.Split('.'); if(p.Length != 4) return false;
+    int a, b; if(!int.TryParse(p[0], out a) || !int.TryParse(p[1], out b)) return false;
+    if(a == 10 || a == 127 || a == 0 || a >= 224) return false;
+    if(a == 172 && b >= 16 && b <= 31) return false;
+    if(a == 192 && b == 168) return false;
+    if(a == 169 && b == 254) return false;
+    if(a == 100 && b >= 64 && b <= 127) return false;   // CGNAT
+    return true;
+  }
+  static string IpFromUi(string ui){   // ui="ssh(1.2.3.4)" / "GUI(1.2.3.4)" / bare "1.2.3.4"
+    if(string.IsNullOrEmpty(ui)) return "";
+    int o = ui.IndexOf('('), c = ui.LastIndexOf(')');
+    string s = (o >= 0 && c > o) ? ui.Substring(o + 1, c - o - 1) : ui;
+    int n = 0; foreach(char ch in s){ if(ch == '.') n++; else if(!(char.IsDigit(ch) || ch == ':' || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))) return ""; }
+    return (n == 3 || s.IndexOf(':') >= 0) ? s : "";
+  }
+
+  /* ---------------- key=value parser ---------------- */
+  static readonly string[] STARTKEYS = { "date=", "logver=", "itime=", "eventtime=", "devname=", "logid=", "time=" };
+  static int StartOf(string s){
+    int best = -1;
+    for(int i = 0; i < STARTKEYS.Length; i++){
+      int p = s.IndexOf(STARTKEYS[i], StringComparison.Ordinal);
+      while(p > 0 && s[p - 1] != ' ' && s[p - 1] != '>' && s[p - 1] != ',' && s[p - 1] != '\t') p = s.IndexOf(STARTKEYS[i], p + 1, StringComparison.Ordinal);
+      if(p >= 0 && (best < 0 || p < best)) best = p;
+    }
+    return best;
+  }
+  static int Parse(string s){
+    D.Clear();
+    int i = StartOf(s); if(i < 0) return 0;
+    int n = s.Length, cnt = 0;
+    while(i < n){
+      while(i < n && (s[i] == ' ' || s[i] == '\t')) i++;
+      int ks = i;
+      while(i < n && s[i] != '=' && s[i] != ' ') i++;
+      if(i >= n) break;
+      if(s[i] == ' ') continue;
+      string k = s.Substring(ks, i - ks); i++;
+      string v;
+      if(i < n && s[i] == '"'){
+        i++; int vs = i; bool esc = false;
+        while(i < n){ char c = s[i]; if(c == '\\' && i + 1 < n){ esc = true; i += 2; continue; } if(c == '"') break; i++; }
+        v = s.Substring(vs, Math.Min(i, n) - vs); if(esc) v = v.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        i++;
+      } else { int vs = i; while(i < n && s[i] != ' ') i++; v = s.Substring(vs, i - vs); }
+      if(k.Length > 0){ D[k] = v; cnt++; }
+    }
+    return cnt;
+  }
+  static long TimeMs(){
+    string et; long v;
+    if(D.TryGetValue("eventtime", out et) && long.TryParse(et, out v) && v > 0){
+      if(v > 100000000000000000L) return v / 1000000L;      // ns
+      if(v > 100000000000000L) return v / 1000L;            // us
+      if(v > 100000000000L) return v;                        // ms
+      return v * 1000L;                                      // s
+    }
+    string d = G("date"), t = G("time");
+    if(d.Length == 0) return 0;
+    DateTime dt;
+    if(!DateTime.TryParseExact(d + " " + t, new string[]{ "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd H:mm:ss", "yyyy/MM/dd HH:mm:ss" }, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out dt)) return 0;
+    long ms = (long)(dt - new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds;
+    string tz = G("tz");   // "+0530" / "-0700": the wall clock is local, subtract the offset
+    if(tz.Length == 5 && (tz[0] == '+' || tz[0] == '-')){
+      int hh, mm; if(int.TryParse(tz.Substring(1,2), out hh) && int.TryParse(tz.Substring(3,2), out mm)){ long off = (hh * 60 + mm) * 60000L; ms += (tz[0] == '+') ? -off : off; }
+    }
+    return ms;
+  }
+
+  /* ---------------- dispatch ---------------- */
+  static void AddTl(long ms, string cat, string sev, string summary, string src, string user, string detail){
+    if(TL.Count >= TLCAP) return;
+    FgEvent e = new FgEvent(); e.Ms = ms; e.Cat = cat; e.Sev = sev; e.Summary = summary; e.Src = src; e.User = user; e.Detail = detail; TL.Add(e);
+  }
+  static string Clip(string s, int n){ if(s == null) return ""; return s.Length > n ? s.Substring(0, n) + "..." : s; }
+
+  static void OnLine(string raw, long ms){
+    string type = G("type"), sub = G("subtype"), logid = G("logid");
+    string cat = (type.Length > 0 ? type : "?") + "/" + (sub.Length > 0 ? sub : "?");
+    FgAgg cv = Get(COVER, cat); cv.Seen(ms); cv.Add(0, CURFILE);
+    if(ms > 0){ FgAgg cd = Get(COVERDAY, cat + "|" + DayKey(ms)); cd.Seen(ms); cd.S0 = cat; cd.C[0] = DayKey(ms); }
+    FgAgg fa = Get(FILES, CURFILE); fa.Add(0, cat); fa.C[1]++;
+    fa.Touch(ms);
+    string dn = G("devname"), did = G("devid");
+    if(dn.Length > 0 || did.Length > 0){ FgAgg dv = Get(DEVS, dn + "|" + did); dv.Seen(ms); dv.S0 = dn; dv.S1 = did; dv.Add(0, G("vd")); dv.Add(1, G("tz")); }
+    else { FgAgg dv = Get(DEVS, "|"); dv.Seen(ms); dv.Add(0, G("vd")); dv.Add(1, G("tz")); }
+
+    if(type == "traffic") Traffic(ms, sub, logid);
+    else if(type == "event"){
+      EventSummary(ms, sub, logid);
+      if(sub == "system") SystemEv(ms, logid);
+      else if(sub == "vpn") VpnEv(ms, logid);
+      else if(sub == "user") UserEv(ms, logid);
+      else if(Has("cfgpath")) ConfigEv(ms);
+      else GenericNotable(ms, sub, logid);
+    }
+    else if(type == "utm" || type == "anomaly") Utm(ms, type, sub);
+    if(IOCS.Length > 0) Ioc(raw, ms, cat);
+  }
+
+  static void EventSummary(long ms, string sub, string logid){
+    FgAgg a = Get(EVSUM, sub + "|" + logid); a.Seen(ms);
+    if(a.N == 1){ a.S0 = sub; a.S1 = logid; a.S2 = G("logdesc"); a.S3 = G("level"); a.S4 = Clip(G("msg"), 300); }
+  }
+
+  static readonly System.Text.RegularExpressions.Regex NOTABLE = new System.Text.RegularExpressions.Regex(
+    "restart|reboot|shut ?down|upgrade|downgrade|firmware|image|restor|backup|password|ha |failover|fortiguard.*(fail|expir)|license|factory|cleared|disk.*format|admin.*(add|delet|creat)|(add|delet|creat).*admin|api|automation|script|debug|log.*(clear|disab|delet)",
+    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+  static readonly System.Text.RegularExpressions.Regex ROUTINE = new System.Text.RegularExpressions.Regex(
+    "^(Disk log file deleted|Disk log rolled|DHCP statistics|Scanunit reloaded|FortiGate update succeeded|Automatic firmware upgrade was checking|NTP server status|Routing information changed|Seeding from entropy)",
+    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+  static void SystemEv(long ms, string logid){
+    string action = G("action"), status = G("status"), logdesc = G("logdesc");
+    if(Has("cfgpath")){ ConfigEv(ms); return; }
+    bool adminLogin = action == "login" && (logdesc.IndexOf("Admin", StringComparison.OrdinalIgnoreCase) >= 0 || Has("method") || logid == "0100032021");
+    if(adminLogin || action == "logout"){
+      string ui = G("ui"), src = G("srcip"); if(src.Length == 0) src = IpFromUi(ui); if(src.Length == 0) src = ui;
+      string user = G("user"), method = G("method"); if(method.Length == 0 && ui.IndexOf('(') > 0) method = ui.Substring(0, ui.IndexOf('('));
+      FgAgg s = Get(ADMSRC, src); s.Seen(ms); s.S0 = src; s.Add(2, G("dstip"));
+      FgAgg u = user.Length > 0 ? Get(ADMUSR, user) : null; if(u != null){ u.Seen(ms); u.S0 = user; }
+      bool lockout = logid == "0100032021" || G("reason") == "exceed_limit";
+      if(action == "logout"){ s.C[3]++; if(u != null) u.C[3]++;
+        if(ADMSESS.Count < LISTCAP) ADMSESS.Add(new object[]{ Ts(ms), "logout", user, src, method, G("profile"), L("duration"), G("state"), G("reason"), G("msg") });
+        AddTl(ms, "admin", "", "Admin logout " + user + " (" + method + ")", src, user, G("state") + " " + G("reason"));
+        return; }
+      if(lockout){ s.C[2]++; s.Add(3, G("reason")); return; }
+      if(status == "success"){ s.C[1]++; if(u != null){ u.C[1]++; u.Add(0, src); u.Add(1, method); u.Add(2, G("profile")); }
+        s.Add(0, user); s.Add(1, method);
+        if(ADMSESS.Count < LISTCAP) ADMSESS.Add(new object[]{ Ts(ms), "login ok", user, src, method, G("profile"), 0L, "", G("reason"), G("msg") });
+        AddTl(ms, "admin", IsPublic(src) ? "high" : "", "Admin login OK " + user + " via " + method + (G("profile").Length > 0 ? " [" + G("profile") + "]" : ""), src, user, G("msg"));
+      } else { s.C[0]++; s.Add(0, user); s.Add(1, method); s.Add(3, G("reason")); if(u != null){ u.C[0]++; u.Add(0, src); u.Add(1, method); } }
+      return;
+    }
+    if(logid == "0100032247" || logdesc.IndexOf("SSH protocol cannot be negotiated", StringComparison.OrdinalIgnoreCase) >= 0){
+      string addr = G("addr"); if(addr.Length > 0){ FgAgg s = Get(ADMSRC, addr); s.Seen(ms); s.S0 = addr; s.C[4]++; }
+      return;
+    }
+    GenericNotable(ms, "system", logid);
+  }
+  static void GenericNotable(long ms, string sub, string logid){
+    string logdesc = G("logdesc"), level = G("level"), user = G("user");
+    string hm = G("msg"); int hp = hm.IndexOf("hostname global setting to ", StringComparison.Ordinal);
+    if(hp >= 0){   // "User daemon_admin changed hostname global setting to FGT-01 from cmdbsvr" - names the box when devname= is absent
+      string hn = hm.Substring(hp + 27); int sp = hn.IndexOf(' '); if(sp > 0) hn = hn.Substring(0, sp);
+      if(hn.Length > 0){ FgAgg dv = Get(DEVS, hn + "|(hostname setting)"); dv.Seen(ms); dv.S0 = hn; dv.S1 = "(hostname setting)"; }
+    }
+    if(ROUTINE.IsMatch(logdesc)) return;
+    bool lv = level == "emergency" || level == "alert" || level == "critical";
+    bool usr = user.Length > 0 && user != "system" && user != "N/A";
+    if(!(lv || usr || NOTABLE.IsMatch(logdesc) || NOTABLE.IsMatch(G("action")))) return;
+    if(SYSNOT.Count < LISTCAP) SYSNOT.Add(new object[]{ Ts(ms), sub, logid, logdesc, level, user, G("ui").Length > 0 ? G("ui") : G("srcip"), G("action"), G("msg") });
+    AddTl(ms, "system", lv ? "med" : "", logdesc + (user.Length > 0 ? " (" + user + ")" : ""), G("srcip"), user, G("msg"));
+  }
+  static readonly System.Text.RegularExpressions.Regex RISKYCFG = new System.Text.RegularExpressions.Regex(
+    "^(system\\.(admin|api-user|accprofile|interface|automation|global|ha|central-management|sso-admin|dns)|user\\.(local|group|radius|ldap|saml)|vpn\\.ssl|vpn\\.ipsec|firewall\\.(vip|policy|local-in-policy|address|service)|log\\.|router\\.)",
+    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+  static void ConfigEv(long ms){
+    string user = G("user"), ui = G("ui"), path = G("cfgpath"), obj = G("cfgobj"), attr = G("cfgattr"), act = G("action");
+    if(CFG.Count < LISTCAP) CFG.Add(new object[]{ Ts(ms), user, ui, act, path, obj, attr, G("msg") });
+    string sev = path.StartsWith("system.admin") || path.StartsWith("system.api-user") || path.StartsWith("user.local") || path.StartsWith("system.accprofile") ? "high" : (RISKYCFG.IsMatch(path) ? "med" : "");
+    AddTl(ms, "config", sev, act + " " + path + (obj.Length > 0 ? " " + obj : ""), IpFromUi(ui), user, Clip(attr, 400));
+  }
+  static void VpnEv(long ms, string logid){
+    string action = G("action"), ttype = G("tunneltype"), remip = G("remip"), user = G("user"), logdesc = G("logdesc");
+    bool ssl = ttype.StartsWith("ssl") || action.StartsWith("ssl-") || logid.StartsWith("010103942") || logid.StartsWith("010103994");
+    if(ssl){
+      if(user.Length == 0) user = G("xauthuser");
+      FgAgg a = Get(VPNSSL, user + "|" + remip); a.Seen(ms); a.S0 = user; a.S1 = remip; a.S2 = G("srccountry"); if(a.S2.Length == 0) a.S2 = G("remcountry");
+      a.Add(0, G("tunnelip")); a.Add(1, G("reason")); a.Add(2, ttype); a.Add(3, G("group"));
+      string sev = "";
+      if(action == "tunnel-up"){ a.C[0]++; sev = "med"; }
+      else if(action == "ssl-login-fail" || G("status") == "failure"){ a.C[1]++; }
+      else if(action == "tunnel-down"){ a.C[2]++; a.C[3] += L("sentbyte"); a.C[4] += L("rcvdbyte"); }
+      else a.C[5]++;
+      if(VPNEV.Count < LISTCAP) VPNEV.Add(new object[]{ Ts(ms), "ssl", action, user, remip, a.S2, G("tunnelip"), G("vpntunnel"), G("reason"), L("sentbyte"), L("rcvdbyte"), G("msg") });
+      if(action == "tunnel-up" || action == "tunnel-down") AddTl(ms, "vpn", sev, "SSL-VPN " + action + " " + user, remip, user, G("tunnelip") + " " + G("srccountry"));
+      return;
+    }
+    string tun = G("vpntunnel"); if(tun.Length == 0) tun = "(no tunnel matched)";
+    FgAgg b = Get(VPNIPS, tun + "|" + remip); b.Seen(ms); b.S0 = tun; b.S1 = remip; if(b.S2.Length == 0) b.S2 = G("srccountry"); b.S3 = G("locip");
+    string ld = logdesc.ToLowerInvariant();
+    if(ld.Contains("phase 1 error")){ b.C[1]++; b.Add(0, G("reason").Length > 0 ? G("reason") : G("status")); }
+    else if(ld.Contains("phase 1") && G("status") == "success" && G("result") == "DONE") b.C[0]++;
+    else if(ld.Contains("sa installed")) b.C[2]++;
+    else if(action == "tunnel-up"){ b.C[3]++; AddTl(ms, "vpn", "", "IPsec tunnel up " + tun, remip, G("xauthuser"), G("assignip")); }
+    else if(action == "tunnel-down"){ b.C[4]++; AddTl(ms, "vpn", "", "IPsec tunnel down " + tun, remip, G("xauthuser"), ""); }
+    else if(action == "tunnel-stats"){ long s = L("sentbyte"), r = L("rcvdbyte"); if(s > b.C[5]) b.C[5] = s; if(r > b.C[6]) b.C[6] = r; }
+    else if(ld.Contains("error") || G("status").Contains("error")){ b.C[7]++; b.Add(0, G("reason").Length > 0 ? G("reason") : logdesc); }
+    string xu = G("xauthuser"); if(xu.Length > 0) b.Add(1, xu);
+    if(VPNEV.Count < LISTCAP && !ld.Contains("statistics") && !ld.Contains("progress")) VPNEV.Add(new object[]{ Ts(ms), "ipsec", action, xu, remip, G("srccountry"), G("assignip"), tun, G("reason").Length > 0 ? G("reason") : G("status"), L("sentbyte"), L("rcvdbyte"), G("msg") });
+  }
+  static void UserEv(long ms, string logid){
+    string user = G("user").Trim(), action = G("action"), status = G("status"), src = G("srcip");
+    if(user.Length == 0 || user == "system") { GenericNotable(ms, "user", logid); return; }
+    FgAgg a = Get(UAUTH, user.ToLowerInvariant()); a.Seen(ms); if(a.S0.Length == 0) a.S0 = user;
+    a.Add(0, src); a.Add(1, G("authserver")); a.Add(2, G("group")); a.Add(4, G("authproto"));
+    if(status == "success") a.C[0]++;
+    else if(status == "failure" || status == "failed"){ a.C[1]++; a.Add(3, G("reason"));
+      if(src.Length > 0){ FgAgg s = Get(UAUTHSRC, src); s.Seen(ms); s.S0 = src; s.C[0]++; s.Add(0, user); } }
+    else if(status == "timed_out" || action == "auth-timeout") a.C[2]++;
+    else if(status == "logon" || action.EndsWith("logon")) a.C[3]++;
+    else if(status == "logout" || action.EndsWith("logout")) a.C[4]++;
+    else a.C[5]++;
+  }
+
+  static readonly Dictionary<string,bool> LATPORTS = new Dictionary<string,bool>{ {"445",true},{"139",true},{"135",true},{"3389",true},{"5985",true},{"5986",true},{"22",true},{"23",true},{"5900",true},{"1433",true},{"3306",true},{"389",true},{"636",true},{"88",true},{"47001",true} };
+  static void Traffic(long ms, string sub, string logid){
+    string act = G("action"), src = G("srcip"), dst = G("dstip"), dport = G("dstport"), proto = G("proto");
+    bool interim = logid == "0000000020" || logid == "0000000021";
+    long sb = Has("sentdelta") ? L("sentdelta") : L("sentbyte"), rb = Has("rcvddelta") ? L("rcvddelta") : L("rcvdbyte");
+    bool denied = act == "deny" || act == "block" || act == "blocked" || act == "drop" || act == "dropped";
+    bool failed = act == "ip-conn";
+    if(!interim){ FgAgg ta = Get(TRFACT, sub + "|" + act); ta.Seen(ms); ta.S0 = sub; ta.S1 = act; }
+    bool pubS = IsPublic(src), pubD = IsPublic(dst);
+    // direction by interface role when the log carries it (an IPsec / SD-WAN overlay can use non-RFC1918 space);
+    // address class is the fallback for logs without roles
+    string srole = G("srcintfrole"), drole = G("dstintfrole");
+    bool fromNet = srole.Length > 0 ? srole == "wan" : pubS;
+    bool toNet = drole.Length > 0 ? drole == "wan" : pubD;
+    string service = G("service"), app = G("app"); if(app.Length == 0) app = G("dstinetsvc");
+    string user = G("user"); if(user.Length == 0) user = G("unauthuser");
+    string pol = G("policyid") + (G("policyname").Length > 0 ? " " + G("policyname") : "");
+    string pp = dport + "/" + ProtoName(proto);
+    long sess = interim ? 0 : 1;
+
+    // service / port summary
+    FgAgg sv = Get(TSVC, pp + "|" + service); sv.N += sess; sv.Touch(ms); sv.S0 = pp; sv.S1 = service;
+    if(!interim){ if(denied) sv.C[1]++; else if(failed) sv.C[2]++; else sv.C[0]++; }
+    sv.C[3] += sb; sv.C[4] += rb; sv.Add(0, src); sv.Add(1, dst);
+
+    if(!fromNet && toNet){   // outbound
+      FgAgg d = Get(TDST, dst); d.N += sess; d.Touch(ms); d.S0 = dst; if(d.S1.Length == 0) d.S1 = G("dstcountry");
+      if(!interim){ if(denied) d.C[1]++; else if(failed) d.C[2]++; else d.C[0]++; }
+      d.C[3] += sb; d.C[4] += rb; d.Add(0, src); d.Add(1, pp); d.Add(2, service); d.Add(3, app); d.Add(4, user); d.Add(5, pol); d.Add(6, G("hostname"));
+      if(!interim && !denied && L("sentbyte") > 0) Big(ms, src, dst, pp, service, app, L("sentbyte"), L("rcvdbyte"), L("duration"), act, pol, user, G("dstcountry"));
+    }
+    if(!fromNet){   // internal source
+      FgAgg s = Get(TSRC, src); s.N += sess; s.Touch(ms); s.S0 = src;
+      if(!interim){ if(denied) s.C[1]++; else if(failed) s.C[2]++; else s.C[0]++; }
+      if(toNet){ s.C[3] += sb; s.C[4] += rb; s.Add(0, dst); } else { s.C[5] += sb; s.C[6] += rb; s.Add(1, dst); }
+      s.Add(2, pp); s.Add(3, user); s.Add(4, G("srcname")); s.Add(5, G("srcmac")); s.Add(6, (G("osname") + " " + G("devtype")).Trim()); s.Add(7, G("srcintf"));
+      if(!toNet && dst.Length > 0 && LATPORTS.ContainsKey(dport) && src != dst){
+        FgAgg lt = Get(TLAT, src + "|" + pp); lt.N += sess; lt.Touch(ms); lt.S0 = src; lt.S1 = pp; lt.S2 = service;
+        if(!interim){ if(denied) lt.C[1]++; else if(failed) lt.C[2]++; else lt.C[0]++; }
+        lt.C[3] += sb; lt.C[4] += rb; lt.Add(0, dst); lt.Add(1, user);
+      }
+    }
+    if(fromNet){   // inbound from the Internet
+      FgAgg n = Get(TIN, src); n.N += sess; n.Touch(ms); n.S0 = src; if(n.S1.Length == 0) n.S1 = G("srccountry");
+      if(!interim){ if(denied) n.C[1]++; else if(failed) n.C[2]++; else n.C[0]++; }
+      n.C[3] += sb; n.C[4] += rb; n.Add(0, pp); n.Add(1, dst); n.Add(2, pol); n.Add(3, sub);
+      if(!denied && !failed && act != "server-rst"){
+        FgAgg e = Get(TEXP, dst + "|" + pp); e.N += sess; e.Touch(ms); e.S0 = dst; e.S1 = pp; e.S2 = service; e.S3 = sub; e.S4 = G("tranip");
+        e.C[3] += sb; e.C[4] += rb; e.Add(0, src); e.Add(1, pol); e.Add(2, G("srccountry"));
+      }
+    }
+  }
+  static string ProtoName(string p){ if(p == "6") return "tcp"; if(p == "17") return "udp"; if(p == "1") return "icmp"; if(p == "58") return "icmp6"; return p.Length > 0 ? "p" + p : "?"; }
+  static void Big(long ms, string src, string dst, string pp, string service, string app, long s, long r, long dur, string act, string pol, string user, string ctry){
+    if(BIG.Count >= 500 && s <= BIGMIN) return;
+    BIG.Add(new object[]{ Ts(ms), src, dst, pp, service, app, s, r, dur, act, pol, user, ctry });
+    if(BIG.Count >= 2000){
+      BIG.Sort(delegate(object[] a, object[] b){ return ((long)b[6]).CompareTo((long)a[6]); });
+      BIG.RemoveRange(500, BIG.Count - 500); BIGMIN = (long)BIG[499][6];
+    }
+  }
+
+  static void Utm(long ms, string type, string sub){
+    string src = G("srcip"), dst = G("dstip"), act = G("action"), user = G("user"); if(user.Length == 0) user = G("unauthuser");
+    if(sub == "virus"){
+      if(AVL.Count < LISTCAP) AVL.Add(new object[]{ Ts(ms), src, dst, G("service"), G("direction"), G("filename"), G("virus"), G("dtype"), act, G("url").Length > 0 ? G("url") : G("hostname"), user, G("dstcountry"), G("analyticscksum").Length > 0 ? G("analyticscksum") : G("filehash"), G("msg") });
+      AddTl(ms, "av", act == "blocked" ? "med" : "high", "AV " + G("eventtype") + ": " + G("virus") + " in " + G("filename") + " (" + act + ")", src, user, dst + " " + G("service"));
+      return;
+    }
+    if(sub == "ips"){
+      string atk = G("attack");
+      FgAgg a = Get(IPSA, atk + "|" + src + "|" + dst + "|" + G("dstport")); a.Seen(ms); a.S0 = atk; a.S1 = src; a.S2 = dst; a.S3 = G("dstport"); a.S4 = G("severity");
+      a.Add(0, act); a.Add(1, G("attackid")); a.Add(2, G("direction")); a.Add(3, G("srccountry")); a.Add(4, G("ref")); a.Add(5, user);
+      if(a.N == 1){ string sv = G("severity"); AddTl(ms, "ips", (sv == "critical" || sv == "high") ? "high" : "med", "IPS " + atk + " [" + sv + "] " + act, src, user, dst + ":" + G("dstport")); }
+      return;
+    }
+    if(sub == "app-ctrl"){
+      string app = G("app");
+      FgAgg a = Get(APPA, app + "|" + src); a.Seen(ms); a.S0 = app; a.S1 = src; a.S2 = G("appcat"); a.S3 = G("apprisk");
+      a.Add(0, act); a.Add(1, dst); a.Add(2, user); a.Add(3, G("dstport")); a.Add(4, G("dstcountry"));
+      if(a.N == 1 && (G("appcat") == "Remote.Access" || G("appcat") == "Proxy" || G("appcat") == "P2P" || G("apprisk") == "critical"))
+        AddTl(ms, "app", act == "block" ? "" : "med", G("appcat") + ": " + app + " (" + act + ") first seen", src, user, dst);
+      return;
+    }
+    if(sub == "webfilter"){
+      string hn = G("hostname"); if(hn.Length == 0) hn = G("url");
+      string cat = G("catdesc"); if(cat.Length == 0) cat = G("eventtype");
+      FgAgg a = Get(WEBA, hn + "|" + src); a.Seen(ms); a.S0 = hn; a.S1 = src; a.S2 = cat; if(a.S3.Length == 0) a.S3 = Clip(G("url"), 300);
+      a.Add(0, act); a.Add(1, user); a.Add(2, G("dstcountry")); a.Add(3, G("profile")); a.C[0] += L("sentbyte");
+      FgAgg c = Get(WEBC, cat + "|" + act); c.Seen(ms); c.S0 = cat; c.S1 = act; c.Add(0, hn); c.Add(1, src);
+      return;
+    }
+    if(sub == "ssl"){
+      string sni = G("sni"); if(sni.Length == 0) sni = G("hostname");
+      string es = G("eventsubtype"); if(es.Length == 0) es = G("eventtype");
+      FgAgg a = Get(SSLA, es + "|" + sni + "|" + act); a.Seen(ms); a.S0 = es; a.S1 = sni; a.S2 = act; a.S3 = Clip(G("msg"), 200);
+      a.Add(0, src); a.Add(1, dst); a.Add(2, G("dstcountry"));
+      return;
+    }
+    string what = G("attack"); if(what.Length == 0) what = G("qname"); if(what.Length == 0) what = G("hostname"); if(what.Length == 0) what = Clip(G("msg"), 160);
+    FgAgg o = Get(UTMO, type + "/" + sub + "|" + G("eventtype") + "|" + what + "|" + act); o.Seen(ms);
+    o.S0 = type + "/" + sub; o.S1 = G("eventtype"); o.S2 = what; o.S3 = act; o.S4 = G("catdesc").Length > 0 ? G("catdesc") : G("severity");
+    o.Add(0, src); o.Add(1, dst); o.Add(2, user);
+    if(o.N == 1 && (sub == "anomaly" || type == "anomaly" || sub == "dlp")) AddTl(ms, sub, "med", sub + ": " + what + " (" + act + ")", src, user, dst);
+  }
+
+  static void Ioc(string raw, long ms, string cat){
+    string low = raw.ToLowerInvariant();
+    for(int t = 0; t < IOCS.Length; t++){
+      string term = IOCS[t]; int p = low.IndexOf(term, StringComparison.Ordinal);
+      while(p >= 0){
+        bool okB = p == 0 || !char.IsLetterOrDigit(low[p - 1]) || !char.IsLetterOrDigit(term[0]);
+        int e = p + term.Length;
+        bool okE = e >= low.Length || !char.IsLetterOrDigit(low[e]) || !char.IsLetterOrDigit(term[term.Length - 1]);
+        if(okB && okE) break;
+        p = low.IndexOf(term, p + 1, StringComparison.Ordinal);
+      }
+      if(p < 0) continue;
+      FgAgg a = Get(IOCT, term); a.Seen(ms); a.S0 = term; a.Add(0, cat); a.Add(1, G("srcip")); a.Add(2, G("dstip"));
+      if(IOCH.Count < 20000) IOCH.Add(new object[]{ Ts(ms), term, cat, G("srcip"), G("dstip"), G("dstport"), G("user"), G("action"), CURFILE, Clip(raw, 1500) });
+      if(a.N <= 50) AddTl(ms, "ioc", "high", "IOC hit '" + term + "' in " + cat, G("srcip"), G("user"), Clip(G("msg").Length > 0 ? G("msg") : (G("dstip") + ":" + G("dstport") + " " + G("action")), 300));
+    }
+  }
+
+  /* ---------------- file loop ---------------- */
+  public static List<string> Enumerate(string input){
+    List<string> outp = new List<string>();
+    foreach(string part in input.Split('|')){
+      string p = part.Trim(); if(p.Length == 0) continue;
+      if(File.Exists(p)){ outp.Add(p); continue; }
+      if(Directory.Exists(p)){
+        foreach(string f in Directory.GetFiles(p, "*", SearchOption.AllDirectories)){
+          string fn = Path.GetFileName(f).ToLowerInvariant();
+          if(fn.EndsWith(".json") || fn.EndsWith(".csv") || fn.EndsWith(".hta") || fn.EndsWith(".html") || fn.EndsWith(".zip") || fn.EndsWith(".exe") || fn.EndsWith(".dll") || fn.EndsWith(".ps1")) continue;
+          if(f.IndexOf("\\_Processed\\", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+          if(Sniff(f)) outp.Add(f);
+        }
+      } else Log("WARN input not found: " + p);
+    }
+    outp.Sort(StringComparer.OrdinalIgnoreCase);
+    return outp;
+  }
+  static TextReader Open(string f){
+    Stream st = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20);
+    if(f.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)) st = new GZipStream(st, CompressionMode.Decompress);
+    return new StreamReader(st, Encoding.UTF8, true, 1 << 20);
+  }
+  public static bool Sniff(string f){
+    try{
+      using(TextReader r = Open(f)){
+        char[] buf = new char[8192]; int n = r.Read(buf, 0, buf.Length); string s = new string(buf, 0, Math.Max(n, 0));
+        return s.IndexOf("logid=", StringComparison.Ordinal) >= 0 && s.IndexOf("type=", StringComparison.Ordinal) >= 0;
+      }
+    } catch { return false; }
+  }
+
+  public static string Run(string input, string outDir, string host, string stamp, string from, string to, string iocFile, string progress, string appVersion){
+    DateTime t0 = DateTime.UtcNow;
+    FILES = new Dictionary<string,FgAgg>(); COVER = new Dictionary<string,FgAgg>(); COVERDAY = new Dictionary<string,FgAgg>();
+    ADMSRC = new Dictionary<string,FgAgg>(); ADMUSR = new Dictionary<string,FgAgg>(StringComparer.OrdinalIgnoreCase); EVSUM = new Dictionary<string,FgAgg>();
+    VPNSSL = new Dictionary<string,FgAgg>(); VPNIPS = new Dictionary<string,FgAgg>(); UAUTH = new Dictionary<string,FgAgg>(); UAUTHSRC = new Dictionary<string,FgAgg>();
+    TDST = new Dictionary<string,FgAgg>(); TSRC = new Dictionary<string,FgAgg>(); TIN = new Dictionary<string,FgAgg>(); TEXP = new Dictionary<string,FgAgg>();
+    TSVC = new Dictionary<string,FgAgg>(); TLAT = new Dictionary<string,FgAgg>(); IPSA = new Dictionary<string,FgAgg>(); APPA = new Dictionary<string,FgAgg>();
+    WEBA = new Dictionary<string,FgAgg>(); WEBC = new Dictionary<string,FgAgg>(); SSLA = new Dictionary<string,FgAgg>(); UTMO = new Dictionary<string,FgAgg>();
+    IOCT = new Dictionary<string,FgAgg>(); DEVS = new Dictionary<string,FgAgg>(); TRFACT = new Dictionary<string,FgAgg>();
+    TL = new List<FgEvent>(); ADMSESS = new List<object[]>(); CFG = new List<object[]>(); SYSNOT = new List<object[]>(); VPNEV = new List<object[]>();
+    AVL = new List<object[]>(); IOCH = new List<object[]>(); BIG = new List<object[]>();
+    DateTime df;
+    if(from.Length > 0 && DateTime.TryParseExact(from, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out df)) FROMMS = (long)(df - new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds;
+    if(to.Length > 0 && DateTime.TryParseExact(to, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out df)) TOMS = (long)(df.AddDays(1) - new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds - 1;
+    List<string> terms = new List<string>();
+    if(iocFile.Length > 0 && File.Exists(iocFile)){
+      foreach(string ln in File.ReadAllLines(iocFile)){ foreach(string t in ln.Split(new char[]{ ',', ';' })){ string x = t.Trim().ToLowerInvariant(); if(x.Length >= 3 && x[0] != '#' && !terms.Contains(x)) terms.Add(x); } }
+    }
+    IOCS = terms.ToArray();
+    Log("FortiGate engine " + appVersion + " - host " + host + " - IOC terms " + IOCS.Length + (FROMMS > 0 || TOMS > 0 ? (" - window " + from + " .. " + to) : ""));
+
+    List<string> files = Enumerate(input);
+    if(files.Count == 0) throw new Exception("No FortiGate key=value log files found under: " + input);
+    long totalBytes = 0; foreach(string f in files){ try{ totalBytes += new FileInfo(f).Length; }catch{} }
+    Log("Files: " + files.Count + " (" + (totalBytes / 1048576) + " MB)");
+    int fi = 0; DateTime lastProg = DateTime.MinValue; long doneBytes = 0;
+    foreach(string f in files){
+      fi++; CURFILE = Path.GetFileName(f);
+      FgAgg fa = Get(FILES, CURFILE); fa.S0 = f; long flen = 0; try{ flen = new FileInfo(f).Length; }catch{} fa.C[0] = flen;
+      Log("[" + fi + "/" + files.Count + "] " + CURFILE + " (" + (flen / 1048576) + " MB)");
+      long fl = 0;
+      using(TextReader r = Open(f)){
+        string line;
+        while((line = r.ReadLine()) != null){
+          LINES++; fl++; BYTES += line.Length + 1;
+          if(line.Length < 10){ SKIPPED++; fa.C[2]++; continue; }
+          if(Parse(line) < 3 || !Has("logid")){ SKIPPED++; fa.C[2]++; continue; }
+          long ms = TimeMs();
+          if((FROMMS > 0 && ms > 0 && ms < FROMMS) || (TOMS > 0 && ms > TOMS)){ OUTWIN++; fa.C[3]++; continue; }
+          PARSED++;
+          OnLine(line, ms);
+          if((fl & 32767) == 0 && progress.Length > 0 && (DateTime.UtcNow - lastProg).TotalSeconds > 1){
+            lastProg = DateTime.UtcNow;
+            try{ File.WriteAllText(progress, "File " + fi + "/" + files.Count + " " + CURFILE + " - " + fl.ToString("N0") + " lines - " + (doneBytes / 1048576) + " MB of earlier files done"); }catch{}
+          }
+        }
+      }
+      fa.N = fl; doneBytes += flen;
+      if(progress.Length > 0){ try{ File.WriteAllText(progress, "File " + fi + "/" + files.Count + " done - " + LINES.ToString("N0") + " lines so far"); }catch{} }
+    }
+    Log("Parsed " + PARSED.ToString("N0") + " of " + LINES.ToString("N0") + " lines (" + SKIPPED + " skipped, " + OUTWIN + " outside window) in " + (DateTime.UtcNow - t0).TotalSeconds.ToString("0.0") + " s");
+    if(progress.Length > 0){ try{ File.WriteAllText(progress, "Writing output..."); }catch{} }
+
+    List<FgTable> tabs = BuildTables();
+    if(!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
+    List<string> produced = new List<string>();
+    foreach(FgTable t in tabs){
+      if(t.Rows.Count == 0) continue;
+      string cp = Path.Combine(outDir, stamp + "_" + t.Name + ".csv");
+      WriteCsv(cp, t); produced.Add(Path.GetFileName(cp));
+    }
+    string jp = Path.Combine(outDir, San(host) + "-FortiGate-" + stamp + ".json");
+    StringBuilder sb = new StringBuilder(1 << 22);
+    sb.Append("{\"app\":\"FortiGate-Log-Triage\",\"appVersion\":").Append(J(appVersion)).Append(",\"host\":").Append(J(host));
+    sb.Append(",\"stamp\":").Append(J(stamp)).Append(",\"input\":").Append(J(input)).Append(",\"generatedUtc\":").Append(J(DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss")));
+    sb.Append(",\"elapsedSec\":").Append(((long)(DateTime.UtcNow - t0).TotalSeconds).ToString());
+    sb.Append(",\"winFrom\":").Append(J(from)).Append(",\"winTo\":").Append(J(to));
+    sb.Append(",\"lines\":").Append(LINES).Append(",\"parsed\":").Append(PARSED).Append(",\"skipped\":").Append(SKIPPED).Append(",\"outsideWindow\":").Append(OUTWIN);
+    sb.Append(",\"iocTerms\":["); for(int i = 0; i < IOCS.Length; i++){ if(i > 0) sb.Append(","); sb.Append(J(IOCS[i])); } sb.Append("]");
+    sb.Append(",\"csvFiles\":["); for(int i = 0; i < produced.Count; i++){ if(i > 0) sb.Append(","); sb.Append(J(produced[i])); } sb.Append("]");
+    sb.Append(",\"tables\":{");
+    bool first = true;
+    foreach(FgTable t in tabs){
+      if(!first) sb.Append(","); first = false;
+      sb.Append(J(t.Name)).Append(":{\"total\":").Append(t.Rows.Count).Append(",\"cols\":[");
+      for(int c = 0; c < t.Cols.Length; c++){ if(c > 0) sb.Append(","); sb.Append(J(t.Cols[c])); }
+      sb.Append("],\"rows\":[");
+      int cap = Math.Min(t.Rows.Count, 6000);
+      for(int r = 0; r < cap; r++){
+        if(r > 0) sb.Append(",");
+        object[] row = t.Rows[r]; sb.Append("[");
+        for(int c = 0; c < row.Length; c++){ if(c > 0) sb.Append(","); object v = row[c]; if(v is long) sb.Append(((long)v).ToString()); else sb.Append(J(v == null ? "" : v.ToString())); }
+        sb.Append("]");
+      }
+      sb.Append("]}");
+    }
+    sb.Append("}}");
+    File.WriteAllText(jp, sb.ToString(), new UTF8Encoding(false));
+    Log("Wrote " + jp + " (" + (new FileInfo(jp).Length / 1024) + " KB) + " + produced.Count + " CSVs");
+    Log("ENGINE_OK " + jp);
+    return jp;
+  }
+  static string San(string s){ StringBuilder b = new StringBuilder(); foreach(char c in s){ b.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.' ? c : '-'); } return b.ToString(); }
+
+  /* ---------------- tables ---------------- */
+  static List<FgTable> BuildTables(){
+    List<FgTable> T = new List<FgTable>();
+    FgTable t;
+
+    t = new FgTable("files", 0, "File", "Path", "Bytes", "Lines", "Skipped", "OutsideWindow", "First_UTC", "Last_UTC", "LogTypes");
+    foreach(FgAgg a in FILES.Values) t.Add(Path.GetFileName(a.S0), a.S0, a.C[0], a.N, a.C[2], a.C[3], Ts(a.First), Ts(a.Last), a.Top(0, 8));
+    t.Desc = false; t.Sort(); T.Add(t);
+
+    t = new FgTable("coverage", 2, "Category", "Lines", "First_UTC", "Last_UTC", "Files");
+    foreach(KeyValuePair<string,FgAgg> kv in COVER) t.Add(kv.Key, kv.Value.N, Ts(kv.Value.First), Ts(kv.Value.Last), kv.Value.List(0));
+    t.SortCol = 1; t.Sort(); T.Add(t);
+
+    t = new FgTable("coverage_days", 0, "Category", "Day_UTC", "Lines", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in COVERDAY.Values) t.Add(a.S0, Ts(a.C[0] * 86400000L).Substring(0, 10), a.N, Ts(a.First), Ts(a.Last));
+    t.Desc = false; t.SortCol2 = -1; t.Sort(); T.Add(t);
+
+    t = new FgTable("devices", 0, "DevName", "DevID", "Lines", "VDOMs", "TZ", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in DEVS.Values) t.Add(a.S0, a.S1, a.N, a.List(0), a.List(1), Ts(a.First), Ts(a.Last));
+    t.SortCol = 2; t.Sort(); T.Add(t);
+
+    t = new FgTable("admin_src", 2, "SrcIP", "Public", "Failed", "Succeeded", "Lockouts", "Logouts", "SSHNegFail", "Users", "TopUsers", "Methods", "TargetIPs", "Reasons", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in ADMSRC.Values) t.Add(a.S0, IsPublic(a.S0) ? "yes" : "no", a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.Distinct(0), a.Top(0, 6), a.List(1), a.List(2), a.Top(3, 4), Ts(a.First), Ts(a.Last));
+    t.SortCol2 = 3; t.Sort(); T.Add(t);
+
+    t = new FgTable("admin_user", 1, "User", "Failed", "Succeeded", "Logouts", "SrcIPs", "TopSrcIPs", "Methods", "Profiles", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in ADMUSR.Values) t.Add(a.S0, a.C[0], a.C[1], a.C[3], a.Distinct(0), a.Top(0, 6), a.List(1), a.List(2), Ts(a.First), Ts(a.Last));
+    t.SortCol2 = 2; t.Sort(); T.Add(t);
+
+    t = new FgTable("admin_sessions", 0, "Time_UTC", "Event", "User", "SrcIP", "Method", "Profile", "DurationSec", "State", "Reason", "Message");
+    foreach(object[] r in ADMSESS) t.Rows.Add(r); t.Sort(); T.Add(t);
+
+    t = new FgTable("config_changes", 0, "Time_UTC", "User", "Interface", "Action", "CfgPath", "CfgObj", "CfgAttr", "Message");
+    foreach(object[] r in CFG) t.Rows.Add(r); t.Sort(); T.Add(t);
+
+    t = new FgTable("system_notable", 0, "Time_UTC", "Subtype", "LogID", "LogDesc", "Level", "User", "UI_Src", "Action", "Message");
+    foreach(object[] r in SYSNOT) t.Rows.Add(r); t.Sort(); T.Add(t);
+
+    t = new FgTable("event_summary", 3, "Subtype", "LogID", "LogDesc", "Count", "Level", "First_UTC", "Last_UTC", "SampleMessage");
+    foreach(FgAgg a in EVSUM.Values) t.Add(a.S0, a.S1, a.S2, a.N, a.S3, Ts(a.First), Ts(a.Last), a.S4);
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("vpn_ssl", 3, "User", "RemoteIP", "Country", "TunnelUp", "LoginFail", "TunnelDown", "BytesSent", "BytesRcvd", "Other", "TunnelIPs", "Reasons", "TunnelTypes", "Groups", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in VPNSSL.Values) t.Add(a.S0, a.S1, a.S2, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.C[5], a.List(0), a.Top(1, 4), a.List(2), a.List(3), Ts(a.First), Ts(a.Last));
+    t.SortCol2 = 4; t.Sort(); T.Add(t);
+
+    t = new FgTable("vpn_ipsec", 4, "Tunnel", "RemoteIP", "Country", "LocalIP", "Phase1Err", "Phase1OK", "SAInstalled", "TunnelUp", "TunnelDown", "MaxStatSent", "MaxStatRcvd", "OtherErr", "Reasons", "XauthUsers", "Lines", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in VPNIPS.Values) t.Add(a.S0, a.S1, a.S2, a.S3, a.C[1], a.C[0], a.C[2], a.C[3], a.C[4], a.C[5], a.C[6], a.C[7], a.Top(0, 4), a.List(1), a.N, Ts(a.First), Ts(a.Last));
+    t.SortCol2 = 14; t.Sort(); T.Add(t);
+
+    t = new FgTable("vpn_events", 0, "Time_UTC", "Kind", "Action", "User", "RemoteIP", "Country", "TunnelIP", "Tunnel", "Reason", "BytesSent", "BytesRcvd", "Message");
+    foreach(object[] r in VPNEV) t.Rows.Add(r); t.Sort(); T.Add(t);
+
+    t = new FgTable("user_auth", 2, "User", "Success", "Failure", "TimedOut", "Logon", "Logout", "Other", "SrcIPs", "TopSrcIPs", "AuthServer", "Groups", "FailReasons", "AuthProto", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in UAUTH.Values) t.Add(a.S0, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.C[5], a.Distinct(0), a.Top(0, 5), a.List(1), a.List(2), a.Top(3, 3), a.Top(4, 3), Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("user_auth_fail_src", 1, "SrcIP", "Failures", "Users", "TopUsers", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in UAUTHSRC.Values) t.Add(a.S0, a.C[0], a.Distinct(0), a.Top(0, 6), Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("traffic_actions", 2, "Subtype", "Action", "Sessions", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in TRFACT.Values) t.Add(a.S0, a.S1, a.N, Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("traffic_public_dst", 6, "DstIP", "Country", "Sessions", "Accepted", "Denied", "Failed", "BytesOut", "BytesIn", "Sources", "TopSources", "Ports", "Services", "Apps", "Users", "Policies", "Hostnames", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in TDST.Values) t.Add(a.S0, a.S1, a.N, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.Distinct(0), a.Top(0, 4), a.Top(1, 6), a.Top(2, 4), a.Top(3, 4), a.Top(4, 4), a.Top(5, 3), a.Top(6, 3), Ts(a.First), Ts(a.Last));
+    t.SortCol2 = 2; t.Sort(); T.Add(t);
+
+    t = new FgTable("traffic_internal_src", 6, "SrcIP", "Sessions", "Accepted", "Denied", "Failed", "BytesOutInternet", "BytesInInternet", "BytesInternal", "PublicDsts", "InternalDsts", "TopPorts", "Users", "Names", "MACs", "Device", "Interface", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in TSRC.Values) t.Add(a.S0, a.N, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.C[5] + a.C[6], a.Distinct(0), a.Distinct(1), a.Top(2, 6), a.Top(3, 4), a.List(4), a.List(5), a.Top(6, 2), a.List(7), Ts(a.First), Ts(a.Last));
+    t.SortCol = 5; t.SortCol2 = 1; t.Sort(); T.Add(t);
+
+    t = new FgTable("traffic_inbound_src", 2, "SrcIP", "Country", "Sessions", "Accepted", "Denied", "Failed", "BytesIn", "BytesOut", "Ports", "Targets", "Policies", "Subtypes", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in TIN.Values) t.Add(a.S0, a.S1, a.N, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.Top(0, 6), a.Top(1, 4), a.Top(2, 3), a.List(3), Ts(a.First), Ts(a.Last));
+    t.SortCol2 = 3; t.Sort(); T.Add(t);
+
+    t = new FgTable("traffic_exposed", 3, "DstIP", "Port", "Service", "Sessions", "Sources", "TopSources", "Countries", "BytesFromInternet", "BytesToInternet", "Policies", "Subtype", "NATtoIP", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in TEXP.Values) t.Add(a.S0, a.S1, a.S2, a.N, a.Distinct(0), a.Top(0, 5), a.Top(2, 5), a.C[3], a.C[4], a.Top(1, 3), a.S3, a.S4, Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("traffic_lateral", 1, "SrcIP", "Sessions", "Port", "Service", "Accepted", "Denied", "Failed", "Targets", "TopTargets", "Bytes", "Users", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in TLAT.Values) t.Add(a.S0, a.N, a.S1, a.S2, a.C[0], a.C[1], a.C[2], a.Distinct(0), a.Top(0, 6), a.C[3] + a.C[4], a.Top(1, 3), Ts(a.First), Ts(a.Last));
+    t.SortCol = 7; t.SortCol2 = 1; t.Sort(); T.Add(t);
+
+    t = new FgTable("traffic_services", 2, "Port", "Service", "Sessions", "Accepted", "Denied", "Failed", "BytesOut", "BytesIn", "Sources", "Destinations", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in TSVC.Values) t.Add(a.S0, a.S1, a.N, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.Distinct(0), a.Distinct(1), Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    BIG.Sort(delegate(object[] a, object[] b){ return ((long)b[6]).CompareTo((long)a[6]); }); if(BIG.Count > 500) BIG.RemoveRange(500, BIG.Count - 500);
+    t = new FgTable("traffic_big_sessions", 6, "Time_UTC", "SrcIP", "DstIP", "Port", "Service", "App", "SentBytes", "RcvdBytes", "DurationSec", "Action", "Policy", "User", "Country");
+    foreach(object[] r in BIG) t.Rows.Add(r); T.Add(t);
+
+    t = new FgTable("utm_av", 0, "Time_UTC", "SrcIP", "DstIP", "Service", "Direction", "FileName", "Virus", "Engine", "Action", "URL", "User", "Country", "Checksum", "Message");
+    foreach(object[] r in AVL) t.Rows.Add(r); t.Sort(); T.Add(t);
+
+    t = new FgTable("utm_ips", 5, "Attack", "Severity", "SrcIP", "DstIP", "DstPort", "Count", "Actions", "AttackID", "Direction", "SrcCountry", "Users", "Ref", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in IPSA.Values) t.Add(a.S0, a.S4, a.S1, a.S2, a.S3, a.N, a.List(0), a.List(1), a.List(2), a.List(3), a.List(5), a.List(4), Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("utm_app", 4, "App", "Category", "Risk", "SrcIP", "Count", "Actions", "Destinations", "TopDestinations", "Users", "Ports", "Countries", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in APPA.Values) t.Add(a.S0, a.S2, a.S3, a.S1, a.N, a.List(0), a.Distinct(1), a.Top(1, 3), a.Top(2, 3), a.Top(3, 4), a.Top(4, 4), Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("utm_web", 3, "Hostname", "Category", "SrcIP", "Count", "Actions", "Users", "Countries", "Profiles", "SampleURL", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in WEBA.Values) t.Add(a.S0, a.S2, a.S1, a.N, a.List(0), a.Top(1, 3), a.List(2), a.List(3), a.S3, Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("utm_web_categories", 2, "Category", "Action", "Count", "Hostnames", "Sources", "TopHostnames", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in WEBC.Values) t.Add(a.S0, a.S1, a.N, a.Distinct(0), a.Distinct(1), a.Top(0, 6), Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("utm_ssl", 3, "EventSubtype", "SNI_Host", "Action", "Count", "Sources", "TopSources", "Destinations", "Countries", "SampleMessage", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in SSLA.Values) t.Add(a.S0, a.S1, a.S2, a.N, a.Distinct(0), a.Top(0, 3), a.Distinct(1), a.Top(2, 3), a.S3, Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("utm_other", 5, "Type", "EventType", "What", "Action", "Category_Severity", "Count", "Sources", "TopSources", "Destinations", "Users", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in UTMO.Values) t.Add(a.S0, a.S1, a.S2, a.S3, a.S4, a.N, a.Distinct(0), a.Top(0, 4), a.Top(1, 4), a.Top(2, 3), Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("ioc_terms", 1, "Term", "Hits", "Categories", "SrcIPs", "DstIPs", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in IOCT.Values) t.Add(a.S0, a.N, a.Top(0, 5), a.Top(1, 5), a.Top(2, 5), Ts(a.First), Ts(a.Last));
+    t.Sort(); T.Add(t);
+
+    t = new FgTable("ioc_hits", 0, "Time_UTC", "Term", "Category", "SrcIP", "DstIP", "DstPort", "User", "Action", "File", "RawLine");
+    foreach(object[] r in IOCH) t.Rows.Add(r); t.Sort(); T.Add(t);
+
+    TL.Sort(delegate(FgEvent a, FgEvent b){ return b.Ms.CompareTo(a.Ms); });
+    t = new FgTable("timeline", -1, "Time_UTC", "Category", "Severity", "Summary", "Src", "User", "Detail");
+    foreach(FgEvent e in TL) t.Add(Ts(e.Ms), e.Cat, e.Sev, e.Summary, e.Src, e.User, e.Detail);
+    T.Add(t);
+    return T;
+  }
+
+  /* ---------------- writers ---------------- */
+  static string J(string s){
+    StringBuilder b = new StringBuilder(s.Length + 2); b.Append('"');
+    foreach(char c in s){
+      switch(c){
+        case '"': b.Append("\\\""); break;
+        case '\\': b.Append("\\\\"); break;
+        case '\n': b.Append("\\n"); break;
+        case '\r': b.Append("\\r"); break;
+        case '\t': b.Append("\\t"); break;
+        case '<': b.Append("\\u003c"); break;
+        default: if(c < 32 || c > 126) b.Append("\\u").Append(((int)c).ToString("x4")); else b.Append(c); break;
+      }
+    }
+    b.Append('"'); return b.ToString();
+  }
+  static string Cq(object o){
+    string v = o == null ? "" : o.ToString();
+    if(!(o is long) && v.Length > 0 && "=+-@\t\r".IndexOf(v[0]) >= 0) v = "'" + v;   // spreadsheet formula guard
+    if(v.IndexOfAny(new char[]{ ',', '"', '\r', '\n' }) >= 0) v = "\"" + v.Replace("\"", "\"\"") + "\"";
+    return v;
+  }
+  static void WriteCsv(string path, FgTable t){
+    using(StreamWriter w = new StreamWriter(path, false, new UTF8Encoding(true))){
+      for(int c = 0; c < t.Cols.Length; c++){ if(c > 0) w.Write(','); w.Write(Cq(t.Cols[c])); }
+      w.Write("\r\n");
+      foreach(object[] r in t.Rows){ for(int c = 0; c < r.Length; c++){ if(c > 0) w.Write(','); w.Write(Cq(r[c])); } w.Write("\r\n"); }
+    }
+  }
+}
+'@
+
+try {
+  if (-not ('FgEngine' -as [type])) { Add-Type -TypeDefinition $cs -Language CSharp }
+} catch {
+  Write-Output "ENGINE_FAIL could not compile the parser (Add-Type): $($_.Exception.Message)"
+  exit 2
+}
+if (-not $Stamp) { $Stamp = (Get-Date).ToString('yyyyMMdd_HHmmss') }
+try {
+  $json = [FgEngine]::Run($InputPath, $OutDir, $TargetHost, $Stamp, $From, $To, $IocFile, $ProgressFile, $AppVersion)
+} catch {
+  $m = $_.Exception.Message; if ($_.Exception.InnerException) { $m = $_.Exception.InnerException.Message }
+  Write-Output "ENGINE_FAIL $m"
+  exit 1
+}
+</script>
+
+<script language="JScript">
+"use strict";
+
+var BOOTLOG="";
+function bootLog(msg){
+  try{
+    var fso=new ActiveXObject("Scripting.FileSystemObject");
+    if(!BOOTLOG){ var dir="";
+      try{ var lp=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); dir=lp.substring(0,lp.lastIndexOf("\\")); }catch(e0){}
+      if(!dir) dir=fso.GetSpecialFolder(2)+"";
+      BOOTLOG=dir+"\\FortiGate-Log-Triage.boot.log";
+      var f0=fso.CreateTextFile(BOOTLOG,true); f0.WriteLine(new Date()+" boot"); f0.Close(); }
+    var f=fso.OpenTextFile(BOOTLOG,8,true); f.WriteLine(new Date()+" "+msg); f.Close();
+  }catch(e){}
+}
+window.onerror=function(msg,url,line){ bootLog("ONERROR line "+line+": "+msg); return false; };
+bootLog("script top-level reached");
+
+var APP_VERSION = "0.1.0";
+var APP_NAME = "FortiGate-Log-Triage";
+var MAXROWS = 6000;
+var DATA = null;                 // the loaded engine JSON
+var TABLES = {};                 // name -> {cols, rows, total, ix:{col->i}, flags:[{s,t[]}]}
+var VIEW = "ov", SUB = "";
+var QUERY = "", FLAGONLY = false, DFROM = 0, DTO = 0;
+var SORTS = {};                  // table -> {k, dir}
+var IOCS = [];
+var LASTOUTDIR = "", JSONPATH = "";
+var BUSY = false, qTimer = null;
+
+function maxRowsWarn(shown, total, extra){
+  if(!(total>shown)) return "";
+  return ' <span class="maxwarn" title="'+esc("Drawing the first "+nf(shown)+" of "+nf(total)+" matching rows - the render cap keeps the app responsive; it does NOT mean the rest were discarded. Narrow the view (search box, Flagged only, date window) or use Export view -> CSV / Open full CSV."+(extra?(" "+extra):""))+'">&#9888; Warning: Maximum Rows Exceeded</span>';
+}
+function copyCapNote(arr){ var total=(arr||[]).length; return total>500 ? (" - first 500 of "+nf(total)+" (clipboard cap); Export view -> CSV writes the full set") : ""; }
+
+/* ---------- tiny helpers ---------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){ if(s==null) return ""; s=String(s); return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function nf(n){ n=String(n); var neg=n.charAt(0)==="-"; if(neg) n=n.substring(1); var dot=n.indexOf("."); var dec=""; if(dot>=0){ dec=n.substring(dot); n=n.substring(0,dot); }
+  var r="",c=0; for(var k=n.length-1;k>=0;k--){ r=n.charAt(k)+r; c++; if(c%3===0&&k>0) r=","+r; } return (neg?"-":"")+r+dec; }
+function fmtBytes(n){ n=Number(n)||0; if(n<1024) return n+" B"; var u=["KB","MB","GB","TB"], i=-1; do{ n/=1024; i++; }while(n>=1024&&i<3); return (n>=100?n.toFixed(0):n.toFixed(1))+" "+u[i]; }
+function setStatus(msg,cls){ var el=$("status"); el.innerHTML=esc(msg); el.className=cls||"muted"; if(!/elapsed|lines -|\d+s$/.test(msg)) bootLog("status["+(cls||"muted")+"] "+msg); }
+function appendLog(t){ var el=$("log"); if(el.getAttribute("data-ph")==="1"){ el.innerHTML=""; el.setAttribute("data-ph","0"); }
+  el.style.display="block"; $("logToggle").innerHTML="Hide log"; el.innerHTML+=esc(t)+"\n"; el.scrollTop=el.scrollHeight; }
+function trimStr(s){ return String(s).replace(/^\s+|\s+$/g,""); }
+function baseName(p){ if(!p) return ""; p=String(p); var i=Math.max(p.lastIndexOf("\\"),p.lastIndexOf("/")); return i>=0?p.substring(i+1):p; }
+function showEl(id,vis){ var e=$(id); if(!e) return; var c=e.className.replace(/\s*\bhide\b/g,""); e.className = vis ? c : (c+" hide"); }
+function msOf(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/); if(!m) return 0; return Date.UTC(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]); }
+function dayNum(s){ if(!s) return 0; var m=String(s).match(/(\d{4})-(\d{1,2})-(\d{1,2})/); if(!m) return 0; function p(x){ x=String(x); return x.length<2?("0"+x):x; } return Number(m[1]+p(m[2])+p(m[3])); }
+function clip(s,n){ s=(s==null)?"":String(s); return s.length>n?(s.substring(0,n)+"\u2026"):s; }
+function uid(){ return new Date().getTime()+""+Math.floor(Math.random()*100000); }
+function batEsc(s){ return String(s).replace(/%/g,"%%"); }
+function argSafePath(s){ s=String(s); return /\\$/.test(s) ? (s+".") : s; }
+function fileExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FileExists(p); }catch(e){ return false; } }
+function folderExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FolderExists(p); }catch(e){ return false; } }
+function parentDir(p){ var i=String(p).lastIndexOf("\\"); return i>=0?String(p).substring(0,i):String(p); }
+function htaFolder(){
+  try{ var cl=fgHta.commandLine+""; var m=cl.match(/"([^"]+\.hta)"/i); if(!m) m=cl.match(/([A-Za-z]:\\[^"]+\.hta)/i); if(m) return parentDir(m[1]); }catch(e){}
+  try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); return parentDir(p); }catch(e2){}
+  return "";
+}
+
+/* ---------- file IO (ADODB UTF-8 with the family's network-zone FSO fallback) ---------- */
+var FILE_IO="adodb";
+function readUtf8(path){
+  if(FILE_IO==="adodb"){
+    try{ var st=new ActiveXObject("ADODB.Stream"); st.Type=2; st.Charset="utf-8"; st.Open(); st.LoadFromFile(path);
+      var parts=[]; while(!st.EOS){ parts.push(st.ReadText(65536)); } st.Close(); return parts.join(""); }
+    catch(e){ if(!/safety settings|data source/i.test(e.message||"")) throw e; FILE_IO="fso";
+      appendLog("NOTE: running from a network location - Windows zone policy blocks the UTF-8 reader, falling back to ANSI file IO. Copy the app to a local folder for full fidelity."); }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject"); var f=fso.OpenTextFile(path,1,false,0), out=f.ReadAll(); f.Close();
+  if(out.length>=3 && out.charCodeAt(0)===239 && out.charCodeAt(1)===187 && out.charCodeAt(2)===191) out=out.substring(3);
+  return out;
+}
+function writeUtf8(path,text){
+  if(FILE_IO==="adodb"){
+    try{ var st=new ActiveXObject("ADODB.Stream"); st.Type=2; st.Charset="utf-8"; st.Open(); st.WriteText(text); st.SaveToFile(path,2); st.Close(); return; }
+    catch(e){ if(!/safety settings|data source/i.test(e.message||"")) throw e; FILE_IO="fso"; }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject"); var f=fso.CreateTextFile(path,true,false); f.Write(text); f.Close();
+}
+function writeAscii(path,text){ var fso=new ActiveXObject("Scripting.FileSystemObject"); var f=fso.CreateTextFile(path,true,false); f.Write(text); f.Close(); }
+function ensureDir(p){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"); p=String(p).replace(/[\\\/]+$/,"");
+  if(!p || fso.FolderExists(p)) return true;
+  var par=parentDir(p); if(par && par!==p && !fso.FolderExists(par)) ensureDir(par);
+  try{ fso.CreateFolder(p); }catch(e){}
+  return fso.FolderExists(p);
+}
+
+/* ---------- batch runners (family) ---------- */
+function runBat(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"", stamp=uid(), bat=tmp+"\\fgt_"+stamp+".bat", logp=tmp+"\\fgt_"+stamp+".log";
+  var f=fso.CreateTextFile(bat,true); f.WriteLine("@echo off"); for(var i=0;i<lines.length;i++){ f.WriteLine(lines[i].replace(/__LOG__/g,logp)); } f.Close();
+  var rc=sh.Run('cmd /c ""'+bat+'""', show?1:0, true), txt="";
+  try{ if(fso.FileExists(logp)) txt=readUtf8(logp); }catch(e){ txt="(could not read log: "+e.message+")"; }
+  try{ fso.DeleteFile(bat); }catch(e2){} try{ if(fso.FileExists(logp)) fso.DeleteFile(logp); }catch(e3){}
+  return { rc:rc, log:txt };
+}
+var PROC_T0=0, PROC_TIMER=null;
+function procFmt(s){ var m=Math.floor(s/60), ss=s%60; return (m<10?"0":"")+m+":"+(ss<10?"0":"")+ss; }
+function procStart(){ PROC_T0=(new Date()).getTime(); if(PROC_TIMER) window.clearInterval(PROC_TIMER); PROC_TIMER=window.setInterval(procTick,500);
+  var el=$("procTimer"); if(el){ el.className="pill run"; el.innerHTML="Processing 00:00"; } }
+function procTick(){ if(!PROC_T0) return; var el=$("procTimer"); if(el) el.innerHTML="Processing "+procFmt(Math.floor(((new Date()).getTime()-PROC_T0)/1000)); }
+function procStop(ok){ if(PROC_TIMER){ window.clearInterval(PROC_TIMER); PROC_TIMER=null; } if(!PROC_T0) return;
+  var s=Math.floor(((new Date()).getTime()-PROC_T0)/1000), el=$("procTimer"); if(el){ el.className=(ok===false?"pill err":"pill ok"); el.innerHTML="Processing time "+procFmt(s); } PROC_T0=0; }
+function runBatAsync(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"", stamp=uid(), bat=tmp+"\\fgt_"+stamp+".bat", logp=tmp+"\\fgt_"+stamp+".log", donep=tmp+"\\fgt_"+stamp+".done";
+  var f=fso.CreateTextFile(bat,true); f.WriteLine("@echo off"); for(var i=0;i<lines.length;i++){ f.WriteLine(lines[i].replace(/__LOG__/g,logp)); }
+  f.WriteLine('echo done> "'+donep+'"'); f.Close();
+  sh.Run('cmd /c ""'+bat+'""', show?1:0, false);
+  return { bat:bat, log:logp, done:donep, stamp:stamp, elapsed:0, graceSecs:10 };
+}
+function procAliveByTag(tag){
+  try{ var w=GetObject("winmgmts:\\\\.\\root\\cimv2"); var items=w.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE CommandLine LIKE '%fgt_"+tag+"%'"); return items.Count>0; }
+  catch(e){ return true; }
+}
+function pollDone(ctx){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var finished=fso.FileExists(ctx.done);
+  if(!finished && ctx.elapsed>=(ctx.graceSecs||10) && ctx.stamp && !procAliveByTag(ctx.stamp)) finished=true;
+  if(finished){
+    var log=""; try{ if(fso.FileExists(ctx.log)) log=readUtf8(ctx.log); }catch(e){ log="(could not read log: "+e.message+")"; }
+    try{ fso.DeleteFile(ctx.bat); }catch(e1){} try{ fso.DeleteFile(ctx.done); }catch(e2){} try{ if(fso.FileExists(ctx.log)) fso.DeleteFile(ctx.log); }catch(e3){}
+    ctx.onDone(log); return;
+  }
+  ctx.elapsed+=1;
+  if(ctx.elapsed>3600){ if(ctx.onTimeout) ctx.onTimeout(); return; }
+  if(ctx.onTick) ctx.onTick(ctx.elapsed);
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+
+/* ---------- target hostname + _Processed output convention (family) ---------- */
+var HOST_TOUCHED=false, OUT_TOUCHED=false, HOST_LOCK=false;
+function sanitHost(s){ return String(s).replace(/[^A-Za-z0-9._\-]/g,"-").replace(/^[\-.]+|[\-.]+$/g,""); }
+function guessHost(p){
+  p=String(p||"");
+  var m=p.match(/Collection-([A-Za-z0-9][A-Za-z0-9\-_\.]*?)-\d{4}-\d{2}-\d{2}/i); if(m) return m[1];
+  m=p.match(/[\\\/]_Processed[\\\/]([^\\\/]+)[\\\/]/i); if(m) return m[1];
+  return "";
+}
+function defaultOutDir(){
+  var h=sanitHost($("hostName").value); if(!h) return "";
+  var base=htaFolder(); if(!base){ try{ base=new ActiveXObject("Scripting.FileSystemObject").GetSpecialFolder(2)+""; }catch(e){ return ""; } }
+  return base+"\\_Processed\\"+h+"\\"+APP_NAME;
+}
+function syncOutDir(){ if(OUT_TOUCHED) return; var d=defaultOutDir(); if(d) $("outDir").value=d; }
+function hostGuessFrom(p){
+  if(!HOST_LOCK && (!HOST_TOUCHED || !trimStr($("hostName").value))){ var g=guessHost(p); if(!g) g=peekDevname(p); if(g) $("hostName").value=sanitHost(g); }
+  syncOutDir();
+}
+function requireHost(){
+  var h=sanitHost($("hostName").value);
+  if(!h){ setStatus("Target hostname is required - it names the output folder _Processed\\<host>\\"+APP_NAME+". Type the firewall's name, then process again.","err"); try{ $("hostName").focus(); }catch(e){} return ""; }
+  if(!trimStr($("outDir").value)) syncOutDir();
+  return h;
+}
+/* the logs name their firewall in devname= (syslog / FortiAnalyzer exports); GUI downloads usually omit it */
+function candidateFiles(p, max){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), out=[];
+  function walk(d, depth){
+    if(out.length>=max) return;
+    var fc=new Enumerator(d.Files);
+    for(; !fc.atEnd() && out.length<max; fc.moveNext()){ var f=fc.item(); if(!/\.(json|csv|hta|html?|zip|exe|dll|ps1|ico|png|jpg)$/i.test(f.Name)) out.push(f.Path+""); }
+    if(depth>0){ var sc=new Enumerator(d.SubFolders); for(; !sc.atEnd() && out.length<max; sc.moveNext()){ if(!/^_Processed$/i.test(sc.item().Name)) walk(sc.item(), depth-1); } }
+  }
+  try{ var parts=String(p).split("|");
+    for(var i=0;i<parts.length;i++){ var q=trimStr(parts[i]); if(!q) continue;
+      if(fso.FileExists(q)) out.push(q); else if(fso.FolderExists(q)) walk(fso.GetFolder(q), 3); } }catch(e){}
+  return out;
+}
+function peekLine(path){
+  if(/\.gz$/i.test(path)) return "";
+  try{ var fso=new ActiveXObject("Scripting.FileSystemObject"); var f=fso.OpenTextFile(path,1,false,0); var s=f.AtEndOfStream?"":f.ReadLine(); f.Close(); return String(s).substring(0,4000); }catch(e){ return ""; }
+}
+function peekDevname(p){
+  var c=candidateFiles(p, 12);
+  for(var i=0;i<c.length;i++){ var s=peekLine(c[i]); var m=s.match(/(?:^|\s)devname="?([^"\s]+)"?/); if(m) return m[1]; }
+  return "";
+}
+function describeInput(p){
+  var c=candidateFiles(p, 400), n=0, sz=0, fso=new ActiveXObject("Scripting.FileSystemObject");
+  for(var i=0;i<c.length;i++){ var s=peekLine(c[i]); if(/\.gz$/i.test(c[i]) || (/logid=/.test(s) && /type=/.test(s))){ n++; try{ sz+=fso.GetFile(c[i]).Size; }catch(e){} } }
+  $("inInfo").innerHTML = c.length ? (n+" FortiGate log file"+(n===1?"":"s")+" found ("+fmtBytes(sz)+")"+(n<c.length?(" - "+(c.length-n)+" other file(s) will be skipped"):"")) : "";
+  return n;
+}
+
+/* ---------- shared toolkit IOC list (family) ---------- */
+function loadToolkitIoc(){
+  try{
+    var base=htaFolder(); if(!base) return; var p=base+"\\IOC.txt"; if(!fileExists(p)) return;
+    var parts=String(readUtf8(p)).split(/\r?\n/), add=[], i;
+    for(i=0;i<parts.length;i++){ var s=trimStr(parts[i]); if(s && s.charAt(0)!=="#") add.push(s); }
+    if(!add.length) return;
+    var cur=$("iocBox").value, curL={}, cp=String(cur).split(/[\r\n,;]+/);
+    for(i=0;i<cp.length;i++){ var c=trimStr(cp[i]).toLowerCase(); if(c) curL["#"+c]=1; }
+    var fresh=[]; for(i=0;i<add.length;i++){ if(!curL.hasOwnProperty("#"+add[i].toLowerCase())) fresh.push(add[i]); }
+    if(!fresh.length) return;
+    $("iocBox").value=(trimStr(cur)?(cur.replace(/\s+$/,"")+"\r\n"):"")+fresh.join("\r\n");
+    applyIocs(true);
+    appendLog("Toolkit IOC list: merged "+fresh.length+" term(s) from "+p);
+  }catch(e){}
+}
+function applyIocs(quiet){
+  var parts=String($("iocBox").value).split(/[\r\n,;]+/), out=[];
+  for(var i=0;i<parts.length;i++){ var s=trimStr(parts[i]).toLowerCase(); if(s && s.charAt(0)!=="#" && s.length>=3) out.push(s); }
+  IOCS=out; $("iocInfo").innerHTML=IOCS.length?(nf(IOCS.length)+" term(s) active"):"no terms";
+  if(DATA){ computeFlags(); renderAll(); }
+  if(quiet!==true) setStatus(IOCS.length?("IOC list applied - "+IOCS.length+" term(s). Re-process to sweep the raw log lines for them."):"IOC list cleared","ok");
+}
+
+/* ---------- run provenance (family) ---------- */
+var CASE_FROM="", CASE_TO="", RUNINFO_LAST=null;
+function writeRunInfo(outdir, input, names, extra){
+  try{
+    var p=String(outdir).replace(/[\\\/]+$/,"")+"\\runinfo.json", arr=[];
+    try{ if(fileExists(p)){ var old=JSON.parse(readUtf8(p)); if(old && old.length!=null) arr=old; } }catch(e0){}
+    var d=new Date(); function p2(x){ return (x<10?"0":"")+x; }
+    var iso=d.getUTCFullYear()+"-"+p2(d.getUTCMonth()+1)+"-"+p2(d.getUTCDate())+"T"+p2(d.getUTCHours())+":"+p2(d.getUTCMinutes())+":"+p2(d.getUTCSeconds())+"Z";
+    var ent={app:APP_NAME, appVersion:APP_VERSION, host:sanitHost($("hostName").value), input:String(input||""), finishedUtc:iso, files:names.slice(0,50)};
+    if(CASE_FROM) ent.winFrom=CASE_FROM; if(CASE_TO) ent.winTo=CASE_TO;
+    if(extra){ for(var k in extra){ if(extra.hasOwnProperty(k)) ent[k]=extra[k]; } }
+    arr.push(ent); writeUtf8(p, JSON.stringify(arr,null,2)); RUNINFO_LAST={path:p, iso:iso};
+  }catch(e){}
+}
+function patchRunInfoSummary(summary){
+  try{ if(!RUNINFO_LAST || !summary) return; var arr=JSON.parse(readUtf8(RUNINFO_LAST.path)); if(!arr || arr.length==null) return;
+    for(var i=arr.length-1;i>=0;i--){ var e=arr[i]; if(e && e.app===APP_NAME && e.finishedUtc===RUNINFO_LAST.iso){ e.summary=summary; break; } }
+    writeUtf8(RUNINFO_LAST.path, JSON.stringify(arr,null,2)); }catch(e){}
+}
+function buildRunSummary(){
+  if(!DATA) return null;
+  var f=FINDINGS||[], top=[], flagged=0, maxS=0;
+  for(var i=0;i<f.length;i++){ if(f[i].s>=3) flagged++; if(f[i].s>maxS) maxS=f[i].s; if(top.length<3 && f[i].s>=3) top.push(f[i].t); }
+  return { entries:DATA.parsed, flagged:flagged, maxScore:maxS, top:top, findings:f.length };
+}
+
+/* ---------- processing ---------- */
+function enginePath(dir){ return dir+"\\FortiGate-Engine.ps1"; }
+function extractEngine(dir){
+  var txt=$("ps1Payload").text||$("ps1Payload").innerHTML||"";
+  txt=String(txt).replace(/^\s+/,"");
+  if(txt.length<2000 || txt.indexOf("@@ENGINE_"+"PAYLOAD@@")>=0) throw new Error("the embedded engine payload is missing (dev source opened instead of the built .hta?)");
+  var p=enginePath(dir); writeAscii(p, txt.replace(/\r?\n/g,"\r\n")); return p;
+}
+function nowStamp(){ var d=new Date(); function p(x){return (x<10?"0":"")+x;} return d.getFullYear()+""+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
+function psq(s){ return '"'+batEsc(argSafePath(s))+'"'; }
+function processRun(){
+  if(BUSY){ setStatus("A run is already in progress","err"); return; }
+  var inp=trimStr($("inPath").value);
+  if(!inp){ setStatus("Set an input folder or log file first","err"); return; }
+  var parts=inp.split("|"), fso=new ActiveXObject("Scripting.FileSystemObject");
+  for(var i=0;i<parts.length;i++){ var q=trimStr(parts[i]); if(q && !fso.FileExists(q) && !fso.FolderExists(q)){ setStatus("Input not found: "+q,"err"); return; } }
+  var host=requireHost(); if(!host) return;
+  var out=trimStr($("outDir").value); if(!out){ setStatus("Set an output directory","err"); return; }
+  if(!ensureDir(out)){ setStatus("Could not create the output folder: "+out,"err"); return; }
+  var ps1; try{ ps1=extractEngine(out); }catch(e){ setStatus("Could not write the engine: "+e.message,"err"); return; }
+  var stamp=nowStamp(), tmp=fso.GetSpecialFolder(2)+"", prog=tmp+"\\fgt_prog_"+uid()+".txt", iocFile="";
+  if(IOCS.length){ iocFile=tmp+"\\fgt_ioc_"+uid()+".txt"; try{ writeUtf8(iocFile, IOCS.join("\r\n")); }catch(e2){ iocFile=""; } }
+  var pf=trimStr($("pFrom").value), pt=trimStr($("pTo").value), useWin=$("pWinEngine").checked;
+  var cmd='powershell -NoProfile -ExecutionPolicy Bypass -File '+psq(ps1)+' -InputPath '+psq(inp)+' -OutDir '+psq(out)+' -TargetHost "'+host+'" -Stamp '+stamp+
+    ' -AppVersion '+APP_VERSION+' -ProgressFile '+psq(prog)+(iocFile?(' -IocFile '+psq(iocFile)):"")+
+    (useWin && /^\d{4}-\d{2}-\d{2}$/.test(pf)?(' -From '+pf):"")+(useWin && /^\d{4}-\d{2}-\d{2}$/.test(pt)?(' -To '+pt):"")+' > "__LOG__" 2>&1';
+  appendLog("Engine: "+ps1); appendLog("Input: "+inp); appendLog("Output: "+out);
+  BUSY=true; $("procBtn").disabled=true; procStart(); setStatus("Processing - the engine reads every line once (about 15 s per GB)\u2026","muted");
+  var ctx=runBatAsync([cmd], false);
+  ctx.onTick=function(sec){ try{ if(fileExists(prog)){ var s=readUtf8(prog); setStatus(trimStr(s)+" - "+sec+"s","muted"); } else setStatus("Processing\u2026 "+sec+"s","muted"); }catch(e){} };
+  ctx.onTimeout=function(){ BUSY=false; $("procBtn").disabled=false; procStop(false); setStatus("The engine has not finished after an hour - see the log.","err"); };
+  ctx.onDone=function(log){
+    BUSY=false; $("procBtn").disabled=false;
+    try{ fso.DeleteFile(prog); }catch(e0){} try{ if(iocFile) fso.DeleteFile(iocFile); }catch(e1){}
+    appendLog(trimStr(log));
+    var m=String(log).match(/ENGINE_OK (.+\.json)/);
+    if(!m){ procStop(false); var f=String(log).match(/ENGINE_FAIL (.+)/); setStatus("Engine failed: "+(f?f[1]:"no output - see the log"),"err"); return; }
+    procStop(true);
+    var jp=trimStr(m[1]); LASTOUTDIR=out;
+    if(!loadJson(jp)) return;
+    var names=[baseName(jp)]; var cs=DATA.csvFiles||[]; for(var k=0;k<cs.length;k++) names.push(cs[k]);
+    writeRunInfo(out, inp, names, {lines:DATA.lines, parsed:DATA.parsed, engineWindow:(useWin?((pf||"")+".."+(pt||"")):"")});
+    patchRunInfoSummary(buildRunSummary());
+  };
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+function autoProcess(){ if(!trimStr($("hostName").value)){ setStatus("/auto: no hostname could be guessed - type it and click Process","err"); return; } processRun(); }
+
+/* ---------- load ---------- */
+function loadJson(path){
+  var t0=new Date().getTime(), obj;
+  try{ obj=JSON.parse(readUtf8(path)); }catch(e){ setStatus("Could not read "+path+": "+e.message,"err"); return false; }
+  if(!obj || obj.app!==APP_NAME || !obj.tables){ setStatus("That JSON is not a FortiGate Log Triage run","err"); return false; }
+  DATA=obj; JSONPATH=path; if(!LASTOUTDIR) LASTOUTDIR=parentDir(path);
+  TABLES={};
+  for(var name in obj.tables){ if(!obj.tables.hasOwnProperty(name)) continue; var t=obj.tables[name], ix={};
+    for(var c=0;c<t.cols.length;c++) ix[t.cols[c]]=c;
+    TABLES[name]={name:name, cols:t.cols, rows:t.rows, total:t.total, ix:ix, flags:[]}; }
+  if(!trimStr($("hostName").value) && obj.host) $("hostName").value=obj.host;
+  computeFlags(); buildFindings();
+  $("srcpill").innerHTML=esc(obj.host)+" &middot; "+nf(obj.parsed)+" lines"; $("srcpill").title=obj.input;
+  showEl("results",true);
+  if(!SUB) SUB="";
+  setViewTab(VIEW||"ov");
+  setStatus("Loaded "+baseName(path)+" - "+nf(obj.parsed)+" lines, "+(FINDINGS.length)+" findings ("+((new Date().getTime()-t0)/1000).toFixed(1)+" s)","ok");
+  return true;
+}
+
+/* ---------- rules: per-table row flags (severity 3 high / 2 medium / 1 context) ---------- */
+var MAL_CAT_RE=/malicious|phishing|spam|newly (observed|registered)|command and control|proxy avoidance|hacking|dynamic dns|spyware|botnet|crypto ?mining|unrated/i;
+var RISKY_APPCAT={"Remote.Access":1,"Proxy":1,"P2P":1};
+var SUS_PORTS={"4444":1,"1337":1,"31337":1,"6666":1,"6667":1,"9001":1,"9030":1,"8888":1,"5555":1,"1080":1,"3128":1};
+var GB=1073741824, MB100=104857600;
+/* forward proxy / SASE egress: upload volume there is the whole org's web traffic, not one host's exfiltration */
+var SASE_RE=/zscaler|netskope|umbrella|forcepoint|prisma[ ._-]?access|cato[ ._-]?networks|iboss|menlo|skyhigh|cloudflare[ ._-]?(warp|gateway|one)/i;
+var FINDINGS=[];
+function v(t,r,col){ var i=t.ix[col]; return (i==null)?"":r[i]; }
+function n(t,r,col){ var x=v(t,r,col); return (typeof x==="number")?x:(Number(x)||0); }
+function cfgRisk(path){
+  path=String(path||"");
+  if(/^(system\.(admin|api-user|accprofile|sso-admin)|user\.local)/i.test(path)) return 3;
+  if(/^(system\.(interface|automation|global|ha|central-management|dns)|firewall\.(vip|local-in-policy|policy|address|service)|vpn\.(ssl|ipsec)|user\.(group|radius|ldap|saml)|log\.|router\.)/i.test(path)) return 2;
+  return 0;
+}
+var RULES={
+  admin_src:function(t,r,T){ var f=n(t,r,"Failed"), s=n(t,r,"Succeeded"), pub=v(t,r,"Public")==="yes";
+    if(s>0 && pub) T.push([3,"INTERNET-ADMIN-LOGIN"]); if(s>0 && f>=5) T.push([3,"FAIL-THEN-SUCCESS"]);
+    if(f>=20) T.push([2,"BRUTE-FORCE"]); else if(f>0 && pub) T.push([1,"INTERNET"]);
+    if(n(t,r,"Lockouts")>0) T.push([1,"LOCKOUT"]); if(n(t,r,"SSHNegFail")>0) T.push([1,"SSH-SCAN"]); },
+  admin_user:function(t,r,T){ var f=n(t,r,"Failed"), s=n(t,r,"Succeeded");
+    if(s>0 && f>=10) T.push([3,"FAIL-THEN-SUCCESS"]); else if(s>0) T.push([1,"VALID-ADMIN"]);
+    if(f>=100) T.push([2,"TARGETED"]); },
+  admin_sessions:function(t,r,T){ var src=v(t,r,"SrcIP");
+    if(v(t,r,"Event")==="login ok" && isPublicIp(src)) T.push([3,"INTERNET-ADMIN-LOGIN"]);
+    if(v(t,r,"State")==="Config-Changed") T.push([1,"CONFIG-CHANGED"]);
+    if(/super_admin/i.test(v(t,r,"Profile"))) T.push([1,"SUPER-ADMIN"]); },
+  config_changes:function(t,r,T){ var k=cfgRisk(v(t,r,"CfgPath")), ui=v(t,r,"Interface"), m=String(ui).match(/\(([^)]+)\)/);
+    if(k===3) T.push([3,"ACCOUNT-CHANGE"]); else if(k===2) T.push([2,"SECURITY-CONFIG"]);
+    if(m && isPublicIp(m[1])) T.push([3,"FROM-INTERNET"]);
+    if(/^log\./i.test(v(t,r,"CfgPath")) && (/delete/i.test(v(t,r,"Action")) || /status\[enable->disable\]|(logtraffic|filter|severity)\[[^\]]*->(disable|none|critical|emergency)\]/i.test(v(t,r,"CfgAttr")))) T.push([3,"LOGGING-OFF"]);
+    if(/logtraffic\[[^\]]*->disable\]/i.test(v(t,r,"CfgAttr"))) T.push([2,"POLICY-LOGGING-OFF"]); },
+  system_notable:function(t,r,T){ var lv=v(t,r,"Level");
+    if(/emergency|alert|critical/.test(lv)) T.push([2,lv.toUpperCase()]);
+    if(/firmware|upgrade|downgrade|image/i.test(v(t,r,"LogDesc"))) T.push([2,"FIRMWARE"]);
+    if(/(log|disk).*(clear|delet|format)/i.test(v(t,r,"LogDesc")) && v(t,r,"User")) T.push([3,"LOG-TAMPER"]); },
+  event_summary:function(t,r,T){ if(/emergency|alert|critical/.test(v(t,r,"Level"))) T.push([1,v(t,r,"Level").toUpperCase()]); },
+  vpn_ssl:function(t,r,T){ var up=n(t,r,"TunnelUp"), fl=n(t,r,"LoginFail");
+    if(up>0 && fl>=5) T.push([3,"FAIL-THEN-SUCCESS"]); if(fl>=20) T.push([2,"BRUTE-FORCE"]);
+    if(up>0 && SSL_HOME && v(t,r,"Country") && v(t,r,"Country")!==SSL_HOME && v(t,r,"Country")!=="Reserved") T.push([2,"UNUSUAL-COUNTRY"]); },
+  vpn_ipsec:function(t,r,T){ if(v(t,r,"Tunnel")==="(no tunnel matched)" && n(t,r,"Phase1Err")>0) T.push([1,"UNKNOWN-PEER"]);
+    else if(n(t,r,"Phase1Err")>=50) T.push([1,"NEGOTIATION-ERRORS"]); },
+  vpn_events:function(t,r,T){ if(v(t,r,"Kind")==="ssl" && v(t,r,"Action")==="tunnel-up") T.push([1,"SSL-LOGIN"]); },
+  user_auth:function(t,r,T){ var f=n(t,r,"Failure"), s=n(t,r,"Success"); if(f>=20) T.push([2,"MANY-FAILURES"]); else if(f>=5 && s>0) T.push([1,"FAILURES"]); },
+  user_auth_fail_src:function(t,r,T){ if(n(t,r,"Users")>=5) T.push([2,"PASSWORD-SPRAY"]); else if(n(t,r,"Failures")>=20) T.push([1,"MANY-FAILURES"]); },
+  traffic_public_dst:function(t,r,T){ var o=n(t,r,"BytesOut");
+    if(SASE_RE.test(v(t,r,"Services")+" "+v(t,r,"Apps"))){ if(o>=MB100) T.push([1,"SASE-PROXY"]); }
+    else if(o>=GB) T.push([3,"BULK-UPLOAD"]); else if(o>=MB100) T.push([2,"LARGE-UPLOAD"]);
+    var ports=String(v(t,r,"Ports")).split(", "); for(var i=0;i<ports.length;i++){ var p=ports[i].split("/")[0]; if(SUS_PORTS[p]){ T.push([2,"PORT-"+p]); break; } } },
+  traffic_internal_src:function(t,r,T){ if(n(t,r,"BytesOutInternet")>=GB) T.push([2,"HEAVY-UPLOADER"]);
+    if(n(t,r,"PublicDsts")>=500) T.push([1,"FAN-OUT"]); if(n(t,r,"Denied")>=1000) T.push([1,"MANY-DENIES"]); },
+  traffic_inbound_src:function(t,r,T){ if(n(t,r,"Accepted")>0) T.push([2,"ALLOWED-IN"]); if(n(t,r,"Denied")>=100) T.push([1,"SCANNER"]); },
+  traffic_exposed:function(t,r,T){ var p=String(v(t,r,"Port")).split("/")[0];
+    if({"22":1,"23":1,"3389":1,"445":1,"5985":1,"5986":1,"1433":1,"3306":1,"5900":1}[p]) T.push([3,"ADMIN-SERVICE-EXPOSED"]);
+    else if(n(t,r,"Sources")>=20) T.push([2,"WIDELY-REACHED"]); else T.push([1,"EXPOSED"]); },
+  traffic_lateral:function(t,r,T){ var k=n(t,r,"Targets"); if(k>=20) T.push([3,"SWEEP"]); else if(k>=10) T.push([2,"FAN-OUT"]); },
+  traffic_big_sessions:function(t,r,T){ var s=n(t,r,"SentBytes");
+    if(SASE_RE.test(v(t,r,"Service")+" "+v(t,r,"App"))){ if(s>=MB100) T.push([1,"SASE-PROXY"]); }
+    else if(s>=GB) T.push([3,"BULK-UPLOAD"]); else if(s>=MB100) T.push([2,"LARGE-UPLOAD"]); },
+  utm_av:function(t,r,T){ T.push(/block/i.test(v(t,r,"Action"))?[2,"MALWARE-BLOCKED"]:[3,"MALWARE-PASSED"]); },
+  utm_ips:function(t,r,T){ var s=v(t,r,"Severity"); if(/critical|high/i.test(s)) T.push([3,"IPS-"+s.toUpperCase()]); else if(/medium/i.test(s)) T.push([2,"IPS-MEDIUM"]);
+    if(!/drop|block|reset|clear_session/i.test(v(t,r,"Actions"))) T.push([2,"NOT-BLOCKED"]); },
+  utm_app:function(t,r,T){ var cat=v(t,r,"Category"), allowed=!/^(block|reset)(, (block|reset))*$/i.test(v(t,r,"Actions"));
+    if(RISKY_APPCAT[cat]) T.push(allowed?[3,cat.toUpperCase()+"-ALLOWED"]:[2,cat.toUpperCase()]);
+    if(/critical/i.test(v(t,r,"Risk"))) T.push([1,"CRITICAL-RISK"]); },
+  utm_web:function(t,r,T){ if(MAL_CAT_RE.test(v(t,r,"Category"))) T.push(/block/i.test(v(t,r,"Actions"))?[2,"BAD-CATEGORY"]:[3,"BAD-CATEGORY-ALLOWED"]); },
+  utm_web_categories:function(t,r,T){ if(MAL_CAT_RE.test(v(t,r,"Category"))) T.push([2,"BAD-CATEGORY"]); },
+  utm_other:function(t,r,T){ if(/anomaly|dlp/i.test(v(t,r,"Type"))) T.push([2,"ANOMALY"]); if(MAL_CAT_RE.test(v(t,r,"Category_Severity"))) T.push([2,"BAD-CATEGORY"]); },
+  ioc_terms:function(t,r,T){ T.push([3,"IOC"]); },
+  ioc_hits:function(t,r,T){ T.push([3,"IOC"]); },
+  timeline:function(t,r,T){ var s=v(t,r,"Severity"); if(s==="high") T.push([3,v(t,r,"Category").toUpperCase()]); else if(s==="med") T.push([2,v(t,r,"Category").toUpperCase()]); }
+};
+var SSL_HOME="";
+function isPublicIp(ip){
+  ip=String(ip||""); if(ip.indexOf(":")>=0) return !/^(::1|fe80|fc|fd|ff)/i.test(ip);
+  var p=ip.split("."); if(p.length!==4) return false; var a=+p[0], b=+p[1];
+  if(isNaN(a)||isNaN(b)) return false;
+  if(a===10||a===127||a===0||a>=224) return false; if(a===172&&b>=16&&b<=31) return false; if(a===192&&b===168) return false;
+  if(a===169&&b===254) return false; if(a===100&&b>=64&&b<=127) return false; return true;
+}
+function computeFlags(){
+  /* SSL-VPN "home" country = where most successful logins come from - logins elsewhere get UNUSUAL-COUNTRY */
+  SSL_HOME=""; var t=TABLES.vpn_ssl;
+  if(t){ var cc={}, best=0; for(var i=0;i<t.rows.length;i++){ var c=v(t,t.rows[i],"Country"), up=n(t,t.rows[i],"TunnelUp"); if(c&&up){ cc["#"+c]=(cc["#"+c]||0)+up; if(cc["#"+c]>best){ best=cc["#"+c]; SSL_HOME=c; } } } }
+  for(var name in TABLES){ if(!TABLES.hasOwnProperty(name)) continue; var tb=TABLES[name], rule=RULES[name]; tb.flags=[]; tb.nflag=0;
+    for(var r=0;r<tb.rows.length;r++){ var T=[], row=tb.rows[r];
+      if(rule){ try{ rule(tb,row,T); }catch(e){} }
+      if(IOCS.length){ var txt=row.join(" | ").toLowerCase(); for(var k=0;k<IOCS.length;k++){ if(txt.indexOf(IOCS[k])>=0){ T.push([3,"IOC:"+IOCS[k]]); break; } } }
+      var s=0; for(var j=0;j<T.length;j++) if(T[j][0]>s) s=T[j][0];
+      tb.flags.push({s:s, t:T}); if(s>=2) tb.nflag++; } }
+}
+
+/* ---------- findings (Overview) ---------- */
+function tbl(name){ return TABLES[name]||{rows:[],cols:[],ix:{},flags:[],total:0,nflag:0}; }
+function addF(s,title,detail,view,sub,q){ FINDINGS.push({s:s,t:title,d:detail||"",view:view||"",sub:sub||"",q:q||""}); }
+function topList(arr,k){ return arr.slice(0,k).join(", ")+(arr.length>k?(" +"+(arr.length-k)+" more"):""); }
+function spanH(a,b){ return (msOf(b)-msOf(a))/3600000; }
+function fmtSpan(h){ return h>=48?((h/24).toFixed(1)+" days"):(h.toFixed(1)+" h"); }
+function buildFindings(){
+  FINDINGS=[];
+  var i, t, r;
+  /* coverage gaps: a log type that spans far less than the overall window is usually an export row cap */
+  t=tbl("coverage"); var gmin=0, gmax=0;
+  for(i=0;i<t.rows.length;i++){ var a=msOf(v(t,t.rows[i],"First_UTC")), b=msOf(v(t,t.rows[i],"Last_UTC")); if(a&&(!gmin||a<gmin)) gmin=a; if(b>gmax) gmax=b; }
+  var gspan=(gmax-gmin)/3600000;
+  for(i=0;i<t.rows.length;i++){ r=t.rows[i]; var h=spanH(v(t,r,"First_UTC"),v(t,r,"Last_UTC")), lines=n(t,r,"Lines");
+    if(gspan>=24 && lines>=1000 && h<gspan*0.5)
+      addF(2,"Coverage gap: "+v(t,r,"Category")+" logs cover only "+fmtSpan(h)+" of the "+fmtSpan(gspan)+" the other logs span",
+        v(t,r,"Category")+" runs "+v(t,r,"First_UTC")+" to "+v(t,r,"Last_UTC")+" UTC ("+nf(lines)+" lines). A GUI download stops at a row limit - for busy log types export day by day (or pull from FortiAnalyzer / syslog) to cover the full window. Conclusions from this log type only hold for that span.","src","coverage"); }
+  /* admin access */
+  t=tbl("admin_src"); var pubF=0, pubIps=0, tgt={}, meth={}, okPub=[], fts=[], totF=0;
+  for(i=0;i<t.rows.length;i++){ r=t.rows[i]; var f=n(t,r,"Failed"), s=n(t,r,"Succeeded"), ip=v(t,r,"SrcIP"); totF+=f;
+    if(v(t,r,"Public")==="yes" && (f>0||n(t,r,"SSHNegFail")>0)){ pubF+=f; pubIps++;
+      var tg=String(v(t,r,"TargetIPs")).split(", "); for(var k=0;k<tg.length;k++) if(tg[k]) tgt["#"+tg[k]]=1;
+      var me=String(v(t,r,"Methods")).split(", "); for(k=0;k<me.length;k++) if(me[k]) meth["#"+me[k]]=1; }
+    if(s>0 && v(t,r,"Public")==="yes") okPub.push(ip+" ("+s+" ok)");
+    if(s>0 && f>=5) fts.push(ip+" ("+f+" failed, then "+s+" ok)"); }
+  function keys(o){ var a=[]; for(var x in o) if(o.hasOwnProperty(x)) a.push(x.substring(1)); return a; }
+  if(okPub.length) addF(4,"Administrator login SUCCEEDED from the Internet: "+topList(okPub,4),"An admin session from a public address. Confirm with the account owner; check Config & system for what changed during the session.","adm","admin_src","");
+  if(fts.length) addF(3,"Admin login succeeded after repeated failures: "+topList(fts,4),"Successful admin logins from a source that first failed several times - credential guessing that worked, or a user mistyping. Verify.","adm","admin_src","");
+  if(pubIps) addF(3,"Management interface reachable from the Internet: "+nf(pubF)+" failed admin logins from "+nf(pubIps)+" public IPs",
+    "Targets: "+topList(keys(tgt),4)+" via "+keys(meth).join(", ")+". Admin access (HTTPS / SSH) on a WAN interface is the entry point for FortiOS auth-bypass exploits (CVE-2022-40684, CVE-2024-55591) and brute force. Restrict with trusted hosts / local-in policy, or move admin off the WAN.","adm","admin_src","");
+  t=tbl("admin_sessions"); var vu={}, valid=[];
+  for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(v(t,r,"Event")!=="login ok") continue; var uu=v(t,r,"User"), o=vu["#"+uu]; if(!o){ o=vu["#"+uu]={n:0,src:{}}; } o.n++; o.src["#"+v(t,r,"SrcIP")]=1; }
+  for(var vk in vu) if(vu.hasOwnProperty(vk)) valid.push(vk.substring(1)+" ("+vu[vk].n+" login"+(vu[vk].n===1?"":"s")+" from "+keys(vu[vk].src).join(", ")+")");
+  if(valid.length) addF(1,"Admin accounts that logged in: "+topList(valid,4),"Every successful admin session is on Admin access > Successful logins / logouts.","adm","admin_sessions","");
+  /* config */
+  t=tbl("config_changes"); var cH=0, cM=0, cu={}; for(i=0;i<t.rows.length;i++){ var fs=t.flags[i].s; if(fs>=3) cH++; else if(fs>=2) cM++; cu["#"+v(t,t.rows[i],"User")]=1; }
+  if(t.total) addF(cH?3:(cM?2:1),nf(t.total)+" configuration change"+(t.total===1?"":"s")+" by "+keys(cu).join(", ")+(cH?(" - "+cH+" touch admin accounts or come from the Internet"):"")+(cM?(" - "+cM+" touch policy / interfaces / VPN / logging"):""),
+    "Attacker persistence on a FortiGate is usually a new admin or API user, a firewall policy or VIP opening a path in, an SSL-VPN user / group change, or logging turned down. Review the flagged rows.","cfg","config_changes","");
+  t=tbl("system_notable"); if(t.nflag) addF(2,nf(t.nflag)+" notable system events (firmware, critical/alert level, log tampering)","","cfg","system_notable","");
+  /* VPN */
+  t=tbl("vpn_ssl"); var sUp=0, sFail=0, sUsers={}, sBrute=[], sOdd=[];
+  for(i=0;i<t.rows.length;i++){ r=t.rows[i]; sUp+=n(t,r,"TunnelUp"); sFail+=n(t,r,"LoginFail"); if(n(t,r,"TunnelUp")) sUsers["#"+v(t,r,"User")]=1;
+    var fl=t.flags[i].t; for(k=0;k<fl.length;k++){ if(fl[k][1]==="BRUTE-FORCE"||fl[k][1]==="FAIL-THEN-SUCCESS") sBrute.push(v(t,r,"RemoteIP")+" ("+v(t,r,"User")+")"); if(fl[k][1]==="UNUSUAL-COUNTRY") sOdd.push(v(t,r,"User")+" from "+v(t,r,"Country")+" "+v(t,r,"RemoteIP")); } }
+  if(sOdd.length) addF(3,"SSL-VPN logins from outside "+SSL_HOME+": "+topList(sOdd,4),"Most SSL-VPN sessions come from "+SSL_HOME+"; these did not.","vpn","vpn_ssl","");
+  if(sBrute.length) addF(3,"SSL-VPN password guessing: "+topList(sBrute,4),"","vpn","vpn_ssl","");
+  if(t.total) addF(1,"SSL-VPN: "+nf(sUp)+" tunnel logins by "+keys(sUsers).length+" users, "+nf(sFail)+" failed logins","","vpn","vpn_ssl","");
+  t=tbl("vpn_ipsec"); var unk=0, unkIps=0, tun={};
+  for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(v(t,r,"Tunnel")==="(no tunnel matched)"){ unk+=n(t,r,"Phase1Err"); unkIps++; } else tun["#"+v(t,r,"Tunnel")]=1; }
+  if(t.total) addF(unkIps?1:0,"IPsec: "+keys(tun).length+" named tunnels"+(unkIps?(", plus "+nf(unk)+" phase-1 errors from "+nf(unkIps)+" peers that match no tunnel (Internet IKE scanning)"):""),"","vpn","vpn_ipsec","");
+  /* user auth */
+  t=tbl("user_auth_fail_src"); var spr=[]; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=2 && n(t,t.rows[i],"Users")>=5) spr.push(v(t,t.rows[i],"SrcIP")+" ("+n(t,t.rows[i],"Users")+" users)"); }
+  if(spr.length) addF(2,"Firewall user authentication failing for many accounts from one source: "+topList(spr,4),"Password spraying against the captive portal / LDAP auth, or a shared machine with stale credentials.","usr","user_auth_fail_src","");
+  /* traffic */
+  var BENIGN_UP="Check who owns the destination before calling it exfiltration: forward proxies / SASE (Zscaler, Netskope), backup and cloud-sync services are the usual benign causes - the Service column often names them.";
+  t=tbl("traffic_public_dst"); var sase=0, saseB=0, saseN={};
+  for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(SASE_RE.test(v(t,r,"Services")+" "+v(t,r,"Apps"))){ sase++; saseB+=n(t,r,"BytesOut"); var sm=(v(t,r,"Services")+" "+v(t,r,"Apps")).match(SASE_RE); if(sm) saseN["#"+sm[0].toLowerCase()]=1; } }
+  if(sase) addF(0,"Internet egress through a forward proxy / SASE ("+keys(saseN).join(", ")+"): "+fmtBytes(saseB)+" out to "+nf(sase)+" proxy addresses - not scored as uploads","Hosts that send their web traffic through the proxy show here as heavy uploaders. The proxy's own logs are where per-site detail lives. These rows carry a blue SASE-PROXY tag.","trf","traffic_public_dst","sase-proxy");
+  t=tbl("traffic_big_sessions"); var bigs=[]; for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(t.flags[i].s>=3) bigs.push(v(t,r,"SrcIP")+" -> "+v(t,r,"DstIP")+" "+fmtBytes(n(t,r,"SentBytes"))+" ("+v(t,r,"Service")+")"); }
+  if(bigs.length) addF(3,"Single sessions uploading over 1 GB to the Internet: "+topList(bigs,3),"Bulk upload is the classic exfiltration tell (rclone / MEGA / FTP / cloud sync). "+BENIGN_UP,"trf","traffic_big_sessions","");
+  t=tbl("traffic_public_dst"); var ups=[]; for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(t.flags[i].s>=3 && n(t,r,"BytesOut")>=GB) ups.push(v(t,r,"DstIP")+" "+fmtBytes(n(t,r,"BytesOut"))+" from "+nf(n(t,r,"Sources"))+" host"+(n(t,r,"Sources")===1?"":"s")+" ("+String(v(t,r,"Services")).replace(/ \(\d+\)/g,"")+")"); }
+  if(ups.length) addF(3,"Internet destinations receiving over 1 GB: "+topList(ups,3),"A destination fed by one internal host is more interesting than one fed by hundreds (that is usually a proxy or SaaS). "+BENIGN_UP,"trf","traffic_public_dst","");
+  t=tbl("traffic_lateral"); var sw=[]; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=3) sw.push(v(t,t.rows[i],"SrcIP")+" -> "+n(t,t.rows[i],"Targets")+" hosts on "+v(t,t.rows[i],"Port")); }
+  if(sw.length) addF(3,"Internal hosts sweeping admin ports (SMB / RDP / WinRM / SSH): "+topList(sw,4),"One source reaching 20+ internal hosts on an admin port is scanning or lateral movement (or a management server - confirm).","trf","traffic_lateral","");
+  t=tbl("traffic_exposed"); var ex=[]; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=2) ex.push(v(t,t.rows[i],"DstIP")+":"+v(t,t.rows[i],"Port")+" ("+n(t,t.rows[i],"Sources")+" srcs)"); }
+  if(ex.length) addF(3,"Services reachable from the Internet with accepted sessions: "+topList(ex,5),"Inbound sessions the firewall allowed from WAN. Admin services (RDP / SMB / SSH / WinRM) exposed this way are a common initial-access path.","trf","traffic_exposed","");
+  /* security profiles */
+  t=tbl("utm_av"); var avP=0; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=3) avP++; }
+  if(t.total) addF(avP?3:2,"Antivirus: "+nf(t.total)+" detection"+(t.total===1?"":"s")+(avP?(", "+avP+" NOT blocked"):" (all blocked)"),"Detected files, the internal host involved and the source are on Security profiles > Antivirus.","utm","utm_av","");
+  t=tbl("utm_ips"); if(t.nflag) addF(3,"IPS: "+nf(t.nflag)+" high / critical or unblocked signature groups","","utm","utm_ips","");
+  t=tbl("utm_app"); var ra={}, raAllowed=0;
+  for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(RISKY_APPCAT[v(t,r,"Category")]){ var key=v(t,r,"App"); if(!ra["#"+key]) ra["#"+key]={n:0,src:0}; ra["#"+key].n+=n(t,r,"Count"); ra["#"+key].src++; if(t.flags[i].s>=3) raAllowed++; } }
+  var ral=[]; for(var ak in ra) if(ra.hasOwnProperty(ak)) ral.push(ak.substring(1)+" ("+ra[ak].src+" hosts, "+nf(ra[ak].n)+" hits)");
+  if(ral.length) addF(raAllowed?3:2,"Remote-access / proxy / P2P applications in use: "+topList(ral,5)+(raAllowed?(" - "+raAllowed+" host/app pairs NOT blocked"):" - all blocked"),"Attackers favour remote-access tools (AnyDesk, TeamViewer, ScreenConnect) for hands-on access; blocked attempts still show which hosts run the client.","utm","utm_app","");
+  t=tbl("utm_web"); var bad=0, badA=0; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=2) bad++; if(t.flags[i].s>=3) badA++; }
+  if(bad) addF(badA?3:2,"Web filter: "+nf(bad)+" host/site pairs in malicious / phishing / C2 / proxy-avoidance categories"+(badA?(", "+badA+" allowed"):""),"","utm","utm_web","");
+  /* IOC */
+  t=tbl("ioc_terms"); if(t.total){ var it=[]; for(i=0;i<t.rows.length;i++) it.push(v(t,t.rows[i],"Term")+" ("+nf(n(t,t.rows[i],"Hits"))+")"); addF(4,"IOC hits in the raw logs: "+topList(it,6),"Matching lines (with the full raw line) are on the IOC hits tab.","ioc","ioc_terms",""); }
+  else if((DATA.iocTerms||[]).length) addF(0,"IOC sweep: "+DATA.iocTerms.length+" term(s) checked against every line - no hits","","ioc","ioc_terms","");
+  FINDINGS.sort(function(a,b){ return b.s-a.s; });
+}
+
+/* ---------- views ---------- */
+var VIEWS=[
+  {id:"ov", label:"Overview"},
+  {id:"adm", label:"Admin access", subs:[["admin_src","By source IP"],["admin_user","By username"],["admin_sessions","Successful logins / logouts"]]},
+  {id:"cfg", label:"Config & system", subs:[["config_changes","Config changes"],["system_notable","Notable system events"],["event_summary","All event types"]]},
+  {id:"vpn", label:"VPN", subs:[["vpn_ssl","SSL-VPN logins"],["vpn_ipsec","IPsec tunnels & peers"],["vpn_events","VPN events"]]},
+  {id:"usr", label:"User auth", subs:[["user_auth","By user"],["user_auth_fail_src","Failures by source"]]},
+  {id:"trf", label:"Traffic", subs:[["traffic_public_dst","Internet destinations"],["traffic_internal_src","Internal sources"],["traffic_inbound_src","Inbound from Internet"],["traffic_exposed","Allowed inbound"],["traffic_lateral","Lateral (admin ports)"],["traffic_services","Ports & services"],["traffic_big_sessions","Largest uploads"],["traffic_actions","Actions"]]},
+  {id:"utm", label:"Security profiles", subs:[["utm_av","Antivirus"],["utm_ips","IPS"],["utm_app","Application control"],["utm_web","Web filter by site"],["utm_web_categories","Web filter categories"],["utm_ssl","SSL inspection"],["utm_other","Other (DNS, anomaly, DLP)"]]},
+  {id:"ioc", label:"IOC hits", subs:[["ioc_terms","By term"],["ioc_hits","Matching lines"]]},
+  {id:"tl", label:"Timeline", subs:[["timeline","Notable events"]]},
+  {id:"src", label:"Sources", subs:[["files","Files"],["coverage","Coverage by log type"],["coverage_days","Lines per day"],["devices","Devices"]]}
+];
+var TABLE_NOTES={
+  admin_src:"Every admin login attempt (GUI / HTTPS / SSH / console) aggregated per source address. Public = by address class. TargetIPs = the firewall addresses the attempts hit - a WAN address here means admin access is exposed to the Internet.",
+  admin_sessions:"Successful admin logins and logouts in time order. State Config-Changed on a logout = the session changed configuration.",
+  config_changes:"Every configuration change the system log recorded (cfgpath / cfgobj / cfgattr = what changed, old->new). Interface = how the admin was connected.",
+  system_notable:"System events worth reading: alert / critical level, firmware, HA, password, backup / restore and admin-initiated actions. Routine rotation / DHCP / update noise is left out (it stays in All event types).",
+  vpn_ssl:"SSL-VPN logins per user and remote address. UNUSUAL-COUNTRY = a successful login from a country other than the one most logins come from.",
+  vpn_ipsec:"IPsec per tunnel and peer. '(no tunnel matched)' rows are IKE attempts from peers no tunnel is configured for - usually Internet scanning.",
+  traffic_public_dst:"Outbound sessions to the Internet per destination (direction from the interface roles lan -> wan). Bytes use the per-interval deltas, so long sessions are not double-counted.",
+  traffic_internal_src:"Per internal source: sessions, Internet upload / download, internal bytes, how many distinct destinations.",
+  traffic_inbound_src:"Sessions arriving from WAN, per Internet source. Denied = blocked by policy (scanning); Accepted = let through.",
+  traffic_exposed:"Internal destination:port pairs that accepted sessions from the Internet - what is actually exposed.",
+  traffic_lateral:"Internal -> internal sessions on admin ports (SMB, RDP, WinRM, SSH, RPC, LDAP, Kerberos, SQL, VNC) per source and port. Only traffic that crosses the firewall is logged - same-subnet traffic never appears.",
+  traffic_big_sessions:"The 500 largest single outbound sessions by bytes sent.",
+  utm_app:"Application-control detections per application and internal host. Remote.Access / Proxy / P2P categories are flagged; allowed ones higher than blocked.",
+  coverage:"First / last line per log type. A type whose span is much shorter than the others was probably cut off by an export row limit.",
+  timeline:"Admin sessions, config changes, VPN logins, AV / IPS / app-control first-sightings and IOC hits merged on one stream, newest first."
+};
+function viewOf(id){ for(var i=0;i<VIEWS.length;i++) if(VIEWS[i].id===id) return VIEWS[i]; return VIEWS[0]; }
+function setViewTab(id){
+  VIEW=id; var vw=viewOf(id);
+  if(vw.subs){ var ok=false; for(var i=0;i<vw.subs.length;i++) if(vw.subs[i][0]===SUB) ok=true; if(!ok) SUB=vw.subs[0][0]; }
+  renderAll();
+}
+function renderBars(){
+  var h="";
+  for(var i=0;i<VIEWS.length;i++){ var vw=VIEWS[i], fl=0, tot=0;
+    if(vw.subs){ for(var j=0;j<vw.subs.length;j++){ var t=TABLES[vw.subs[j][0]]; if(t){ fl+=t.nflag; tot+=t.total; } } }
+    h+='<button class="btn'+(VIEW===vw.id?" on":"")+'" data-view="'+vw.id+'">'+esc(vw.label)+(vw.subs?('<span class="cnt">'+nf(tot)+'</span>'):"")+(fl?('<span class="fl">'+nf(fl)+'&#9873;</span>'):"")+'</button>'; }
+  $("viewBar").innerHTML=h;
+  var vw2=viewOf(VIEW), s="";
+  if(vw2.subs){ for(var k=0;k<vw2.subs.length;k++){ var nm=vw2.subs[k][0], tt=TABLES[nm];
+    s+='<button class="btn sm'+(SUB===nm?" on":"")+'" data-sub="'+nm+'">'+esc(vw2.subs[k][1])+'<span class="cnt">'+(tt?nf(tt.total):"0")+'</span>'+(tt&&tt.nflag?('<span class="fl">'+nf(tt.nflag)+'&#9873;</span>'):"")+'</button>'; } }
+  $("subBar").innerHTML=s; showEl("subBar", !!vw2.subs);
+}
+function renderAll(){
+  if(!DATA) return;
+  renderBars();
+  var ov=(VIEW==="ov");
+  showEl("ovPane",ov); showEl("tblCard",!ov); if(ov){ showEl("detailCard",false); renderOverview(); } else renderTable();
+}
+
+function stat(nv,l,cls,tip){ return '<div class="stat"'+(tip?(' title="'+esc(tip)+'"'):"")+'><span class="n'+(cls?(" "+cls):"")+'">'+nv+'</span><span class="l">'+esc(l)+'</span></div>'; }
+function renderOverview(){
+  var d=DATA, cov=tbl("coverage"), gmin=0, gmax=0, i;
+  for(i=0;i<cov.rows.length;i++){ var a=msOf(v(cov,cov.rows[i],"First_UTC")), b=msOf(v(cov,cov.rows[i],"Last_UTC")); if(a&&(!gmin||a<gmin)) gmin=a; if(b>gmax) gmax=b; }
+  var dev=tbl("devices"), tz="", dn=[];
+  for(i=0;i<dev.rows.length;i++){ var dnm=v(dev,dev.rows[i],"DevName"); if(dnm && (","+dn.join(",")+",").indexOf(","+dnm+",")<0) dn.push(dnm); if(v(dev,dev.rows[i],"TZ")) tz=String(v(dev,dev.rows[i],"TZ")).replace(/^'/,""); }
+  var hi=0, md=0; for(i=0;i<FINDINGS.length;i++){ if(FINDINGS[i].s>=3) hi++; else if(FINDINGS[i].s===2) md++; }
+  $("ovTitle").innerHTML="Overview - "+esc(d.host)+" <span class=\"muted\" style=\"text-transform:none\">(engine v"+esc(d.appVersion)+", "+esc(d.generatedUtc)+" UTC, "+nf(d.elapsedSec)+" s)</span>";
+  $("statbar").innerHTML=
+    stat(nf(d.parsed),"log lines")+stat(nf(tbl("files").total),"files")+stat(nf(cov.total),"log types")+
+    stat(gmin?fmtSpan((gmax-gmin)/3600000):"-","time span","",gmin?(new Date(gmin).toUTCString()+" .. "+new Date(gmax).toUTCString()):"")+
+    stat(hi,"high findings",hi?"err":"")+stat(md,"medium findings",md?"warn":"")+
+    stat(esc(dn.length?dn.join(", "):"(not in logs)"),"device name")+stat(esc(tz||"?"),"device TZ","","Device timezone from the logs' tz= field. All times in this app are UTC.")+
+    (d.skipped?stat(nf(d.skipped),"lines skipped","warn","Lines that were not FortiOS key=value (headers, blank lines, other formats)"):"")+
+    (d.winFrom||d.winTo?stat(esc((d.winFrom||"..")+" - "+(d.winTo||"..")),"engine window","warn",nf(d.outsideWindow)+" lines outside the window were skipped by the engine"):"");
+  var h="";
+  if(!FINDINGS.length) h='<div class="muted">No findings.</div>';
+  var SL=["INFO","LOW","MEDIUM","HIGH","CRITICAL"];
+  for(i=0;i<FINDINGS.length;i++){ var f=FINDINGS[i];
+    h+='<div class="find"><span class="sev s'+f.s+'">'+SL[f.s]+'</span><span class="ft'+(f.view?' lnk':'')+'" data-fi="'+i+'">'+esc(f.t)+'</span>'+(f.d?('<div class="fd">'+esc(f.d)+'</div>'):"")+'</div>'; }
+  $("findings").innerHTML=h;
+  var c="<table><thead><tr><th>Log type</th><th>Lines</th><th>First (UTC)</th><th>Last (UTC)</th><th>Span</th><th style=\"width:320px\">Coverage of the overall window</th></tr></thead><tbody>";
+  var W=gmax-gmin||1;
+  for(i=0;i<cov.rows.length;i++){ var r=cov.rows[i], fa=msOf(v(cov,r,"First_UTC")), fb=msOf(v(cov,r,"Last_UTC")), left=Math.round((fa-gmin)/W*300), wd=Math.max(2,Math.round((fb-fa)/W*300));
+    var short=((fb-fa)<(W*0.5) && n(cov,r,"Lines")>=1000 && W>86400000);
+    c+='<tr'+(short?' class="s2"':'')+'><td class="first mono">'+esc(v(cov,r,"Category"))+'</td><td class="num">'+nf(n(cov,r,"Lines"))+'</td><td class="mono">'+esc(v(cov,r,"First_UTC"))+'</td><td class="mono">'+esc(v(cov,r,"Last_UTC"))+'</td><td class="mono'+(short?' warn':'')+'">'+fmtSpan((fb-fa)/3600000)+'</td>'+
+      '<td><span class="covt"><span class="cov" style="position:absolute;left:'+left+'px;width:'+wd+'px"></span></span></td></tr>'; }
+  $("coverage").innerHTML=c+"</tbody></table>";
+}
+
+/* ---------- generic table view ---------- */
+var NUMCOL_RE=/^(Lines|Bytes|Skipped|Outside|Failed|Succeeded|Lockouts|Logouts|SSHNeg|Users|SrcIPs|Count|Tunnel(Up|Down)|LoginFail|BytesSent|BytesRcvd|Other|Phase1|SA|MaxStat|OtherErr|Success|Failure|TimedOut|Logon|Logout|Sessions|Accepted|Denied|Failed|BytesOut|BytesIn|Sources|PublicDsts|InternalDsts|BytesInternal|Targets|Destinations|SentBytes|RcvdBytes|DurationSec|Hits|Hostnames|BytesFrom|BytesTo|Failures)/;
+var BYTECOL_RE=/Bytes|MaxStat/;
+function isTimeCol(c){ return /_UTC$/.test(c); }
+function viewRows(t){
+  var out=[], fromMs=DFROM?msOf(String(DFROM).replace(/(\d{4})(\d{2})(\d{2})/,"$1-$2-$3")+" 00:00:00"):0,
+      toMs=DTO?msOf(String(DTO).replace(/(\d{4})(\d{2})(\d{2})/,"$1-$2-$3")+" 23:59:59"):0;
+  var ft=t.ix["First_UTC"], lt=t.ix["Last_UTC"], tt=t.ix["Time_UTC"];
+  for(var i=0;i<t.rows.length;i++){ var r=t.rows[i], fl=t.flags[i];
+    if(FLAGONLY && (!fl || fl.s<2)) continue;
+    if(fromMs||toMs){
+      if(tt!=null){ var x=msOf(r[tt]); if(x && ((fromMs && x<fromMs) || (toMs && x>toMs))) continue; }
+      else if(ft!=null && lt!=null){ var a=msOf(r[ft]), b=msOf(r[lt]); if(a && b && ((fromMs && b<fromMs) || (toMs && a>toMs))) continue; }
+    }
+    if(QUERY){ var txt=r.join(" | ").toLowerCase(); if(fl) for(var k=0;k<fl.t.length;k++) txt+=" "+fl.t[k][1].toLowerCase(); if(txt.indexOf(QUERY)<0) continue; }
+    out.push(i); }
+  var so=SORTS[t.name];
+  if(so && so.k!=null){ var k2=so.k, dir=so.dir;
+    out.sort(function(a,b){ var x,y;
+      if(k2===-2){ x=t.flags[a].s; y=t.flags[b].s; } else { x=t.rows[a][k2]; y=t.rows[b][k2]; }
+      if(typeof x==="number" && typeof y==="number") return (x-y)*dir;
+      x=String(x).toLowerCase(); y=String(y).toLowerCase(); return (x<y?-1:(x>y?1:0))*dir; }); }
+  return out;
+}
+function cellHtml(col, val){
+  if(typeof val==="number"){ var s=BYTECOL_RE.test(col)?fmtBytes(val):nf(val); return '<td class="num" title="'+esc(nf(val))+'">'+(val===0?'<span class="muted">0</span>':esc(s))+'</td>'; }
+  val=(val==null)?"":String(val);
+  var hit=false; if(IOCS.length){ var lv=val.toLowerCase(); for(var i=0;i<IOCS.length;i++) if(lv.indexOf(IOCS[i])>=0){ hit=true; break; } }
+  return '<td class="'+(isTimeCol(col)||/IP$|IPs$|^Port$|Path|Attr|RawLine|Message|URL/.test(col)?"mono":"")+(hit?" hl-ioc":"")+'" title="'+esc(clip(val,1200))+'">'+esc(clip(val,240))+'</td>';
+}
+function tagsHtml(fl){ if(!fl||!fl.t.length) return ""; var h=""; for(var i=0;i<fl.t.length;i++){ var tg=fl.t[i]; h+='<span class="tag '+(/^IOC/.test(tg[1])?"ioc":("t"+tg[0]))+'">'+esc(tg[1])+'</span>'; } return h; }
+function curTable(){ return TABLES[SUB]; }
+function renderTable(){
+  var t=curTable();
+  if(!t){ $("tableTitle").innerHTML=esc(SUB)+" - not in this run"; $("tbl").innerHTML=""; $("count").innerHTML=""; $("tblNote").innerHTML=""; return; }
+  var vw=viewOf(VIEW), label=SUB; for(var i=0;i<(vw.subs||[]).length;i++) if(vw.subs[i][0]===SUB) label=vw.subs[i][1];
+  $("tableTitle").innerHTML=esc(vw.label)+" &rsaquo; "+esc(label);
+  $("tblNote").innerHTML=esc(TABLE_NOTES[SUB]||"");
+  var idx=viewRows(t), so=SORTS[t.name]||{};
+  var h="<thead><tr><th data-k=\"-2\">Flags"+(so.k===-2?(so.dir>0?" \u25B2":" \u25BC"):"")+"</th>";
+  for(var c=0;c<t.cols.length;c++){ h+='<th data-k="'+c+'">'+esc(t.cols[c].replace(/_UTC$/," (UTC)"))+(so.k===c?(so.dir>0?" \u25B2":" \u25BC"):"")+'</th>'; }
+  h+="</tr></thead><tbody>";
+  var lim=Math.min(idx.length, MAXROWS);
+  for(var r=0;r<lim;r++){ var ri=idx[r], row=t.rows[ri], fl=t.flags[ri];
+    h+='<tr data-i="'+ri+'"'+(fl&&fl.s?(' class="s'+fl.s+'"'):"")+'><td class="first">'+tagsHtml(fl)+'</td>';
+    for(var c2=0;c2<t.cols.length;c2++) h+=cellHtml(t.cols[c2], row[c2]);
+    h+="</tr>"; }
+  $("tbl").innerHTML=h+"</tbody>";
+  window.__viewIdx=idx;
+  var capNote=(t.total>t.rows.length)?(' <span class="maxwarn" title="'+esc("This table has "+nf(t.total)+" rows; the run JSON carries the first "+nf(t.rows.length)+" (engine order: most significant first). Open full CSV has all of them.")+'">&#9888; JSON holds '+nf(t.rows.length)+' of '+nf(t.total)+'</span>'):"";
+  $("count").innerHTML=nf(idx.length)+" of "+nf(t.rows.length)+" rows"+(t.nflag?(" &middot; "+nf(t.nflag)+" flagged"):"")+maxRowsWarn(lim, idx.length)+capNote;
+  var ths=$("tbl").getElementsByTagName("th");
+  for(var j=0;j<ths.length;j++){ ths[j].onclick=function(e){ e=e||window.event; var tg=e.target||e.srcElement; if(tg && /\bcgrip\b/.test(tg.className+"")) return;
+    var k=parseInt(this.getAttribute("data-k"),10), cur=SORTS[SUB]||{}; var num=(k===-2)||(TABLES[SUB].rows.length && typeof TABLES[SUB].rows[0][k]==="number");
+    SORTS[SUB]={k:k, dir:(cur.k===k)?-cur.dir:(num?-1:1)}; renderTable(); }; }
+  setupColResize(); applyFreeze();
+}
+function applyFreeze(){ var sc=$("tblScroll"); if(!sc) return; var ths=$("tbl").getElementsByTagName("th"), y=sc.scrollTop; for(var i=0;i<ths.length;i++) ths[i].style.top=y+"px"; }
+
+/* ---------- detail pane ---------- */
+var DETROW=-1;
+function renderDetail(ri){
+  var t=curTable(); if(!t || ri<0 || ri>=t.rows.length) return; DETROW=ri;
+  var row=t.rows[ri], fl=t.flags[ri], h='<div class="dl">';
+  if(fl && fl.t.length) h+='<div><b>Flags</b>'+tagsHtml(fl)+'</div>';
+  for(var c=0;c<t.cols.length;c++){ var val=row[c], s=(typeof val==="number")?(nf(val)+(BYTECOL_RE.test(t.cols[c])?(" ("+fmtBytes(val)+")"):"")):String(val==null?"":val);
+    var cls=""; if(IOCS.length){ var lv=s.toLowerCase(); for(var k=0;k<IOCS.length;k++) if(lv.indexOf(IOCS[k])>=0) cls="hl-ioc"; }
+    h+='<div><b>'+esc(t.cols[c])+'</b><span class="'+cls+'">'+esc(s)+'</span></div>'; }
+  h+="</div>";
+  var pivots=[], seen={};
+  for(var c3=0;c3<t.cols.length;c3++){ if(/IP$/.test(t.cols[c3]) && row[c3] && !seen[row[c3]]){ seen[row[c3]]=1; pivots.push(row[c3]); } }
+  if(pivots.length){ h+='<div class="muted" style="font-size:12px;margin-top:6px">Search this value in the current table: '; for(var p=0;p<pivots.length;p++) h+='<span class="lnk mono" data-q="'+esc(pivots[p])+'">'+esc(pivots[p])+'</span> &nbsp; '; h+='</div>'; }
+  $("detBody").innerHTML=h; showEl("detailCard",true);
+}
+function copyDetail(){ var t=curTable(); if(!t||DETROW<0) return; var row=t.rows[DETROW], out=[];
+  for(var c=0;c<t.cols.length;c++) out.push(t.cols[c]+": "+row[c]);
+  var fl=t.flags[DETROW]; if(fl&&fl.t.length){ var tg=[]; for(var i=0;i<fl.t.length;i++) tg.push(fl.t[i][1]); out.push("Flags: "+tg.join(", ")); }
+  try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Row copied","ok"); }catch(e){ setStatus("Copy failed: "+e.message,"err"); } }
+
+/* ---------- resizable columns (family) ---------- */
+var COLW={}, DRAG=null, SETTINGS={};
+function settingsPath(){ var d=htaFolder(); return d?(d+"\\FortiGate-Log-Triage.settings.json"):""; }
+function loadSettings(){ try{ var p=settingsPath(); if(p && fileExists(p)){ var o=JSON.parse(readUtf8(p)); if(o && typeof o==="object") SETTINGS=o; } }catch(e){ SETTINGS={}; }
+  if(SETTINGS.colw && typeof SETTINGS.colw==="object") COLW=SETTINGS.colw; }
+function saveSettings(){ try{ var p=settingsPath(); if(p) writeUtf8(p, JSON.stringify(SETTINGS)); }catch(e){} }
+function curZoom(){ try{ var el=$("content"); var z=parseFloat(el.style.zoom||(el.currentStyle&&el.currentStyle.zoom)||""); return (z&&z>0)?z:1; }catch(e){ return 1; } }
+function setupColResize(){
+  var tb=$("tbl"), ths=tb.getElementsByTagName("th"); if(!ths.length) return;
+  var w=COLW[SUB];
+  if(w && w.length===ths.length){ tb.style.tableLayout="fixed"; tb.style.width="auto"; for(var j=0;j<ths.length;j++) ths[j].style.width=w[j]+"px"; }
+  else { tb.style.tableLayout=""; tb.style.width=""; }
+  for(var i=0;i<ths.length;i++){ var g=document.createElement("div"); g.className="cgrip"; g.setAttribute("data-ci",String(i)); g.title="Drag to resize column - double-click to reset all widths"; g.onmousedown=gripDown; g.ondblclick=gripReset; ths[i].appendChild(g); }
+}
+function gripDown(e){ e=e||window.event; var ci=parseInt(this.getAttribute("data-ci"),10), tb=$("tbl"), ths=tb.getElementsByTagName("th");
+  var w=COLW[SUB]; if(!w || w.length!==ths.length){ w=[]; for(var i=0;i<ths.length;i++) w.push(ths[i].offsetWidth); COLW[SUB]=w; tb.style.tableLayout="fixed"; tb.style.width="auto"; for(var j=0;j<ths.length;j++) ths[j].style.width=w[j]+"px"; }
+  DRAG={ci:ci, x:(e.clientX||0), w:w[ci], th:ths[ci], z:curZoom()}; document.onmousemove=gripMove; document.onmouseup=gripUp; document.onselectstart=function(){ return false; };
+  if(e.preventDefault) e.preventDefault(); e.returnValue=false; if(e.stopPropagation) e.stopPropagation(); e.cancelBubble=true; return false; }
+function gripMove(e){ e=e||window.event; if(!DRAG) return false; var w=Math.round(DRAG.w+((e.clientX||0)-DRAG.x)/DRAG.z); if(w<40) w=40; if(w>1600) w=1600; COLW[SUB][DRAG.ci]=w; DRAG.th.style.width=w+"px"; return false; }
+function gripUp(){ document.onmousemove=null; document.onmouseup=null; document.onselectstart=null; if(DRAG){ DRAG=null; SETTINGS.colw=COLW; saveSettings(); } }
+function gripReset(e){ e=e||window.event; document.onmousemove=null; document.onmouseup=null; DRAG=null; COLW[SUB]=null; SETTINGS.colw=COLW; saveSettings(); renderTable();
+  if(e){ if(e.stopPropagation) e.stopPropagation(); e.cancelBubble=true; } return false; }
+
+/* ---------- export / copy ---------- */
+function cq(x){ x=(x==null)?"":String(x); return /[",\r\n]/.test(x)?('"'+x.replace(/"/g,'""')+'"'):x; }
+function xq(x){ if(typeof x==="number") return String(x); x=(x==null)?"":String(x); if(/^[=+\-@\t\r]/.test(x) && !/^[+\-]?\d+(\.\d+)?$/.test(x)) x="'"+x; return cq(x); }
+function outDirForExport(){ return LASTOUTDIR||trimStr($("outDir").value)||(JSONPATH?parentDir(JSONPATH):""); }
+function exportView(){
+  var t=curTable(), idx=window.__viewIdx||[]; if(!t||!idx.length){ setStatus("Nothing to export","err"); return; }
+  var dir=outDirForExport(); if(!dir){ setStatus("No output folder to write to","err"); return; }
+  var lines=[], hd=["Flags"]; for(var c=0;c<t.cols.length;c++) hd.push(xq(t.cols[c])); lines.push(hd.join(","));
+  for(var i=0;i<idx.length;i++){ var row=t.rows[idx[i]], fl=t.flags[idx[i]], tg=[]; for(var k=0;k<fl.t.length;k++) tg.push(fl.t[k][1]);
+    var cells=[xq(tg.join("; "))]; for(var c2=0;c2<t.cols.length;c2++) cells.push(xq(row[c2])); lines.push(cells.join(",")); }
+  var path=dir+"\\"+SUB+"_export_"+nowStamp()+".csv";
+  try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(idx.length)+" rows \u2192 "+path,"ok"); appendLog("Exported: "+path); }catch(e){ setStatus("Export failed: "+e.message,"err"); }
+}
+function openFullCsv(){
+  if(!DATA){ return; } var dir=JSONPATH?parentDir(JSONPATH):outDirForExport(), p=dir+"\\"+DATA.stamp+"_"+SUB+".csv";
+  if(!fileExists(p)){ setStatus("Full CSV not found (empty table, or the run folder moved): "+p,"err"); return; }
+  try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+p+'"',1,false); setStatus("Opened "+p,"ok"); }catch(e){ setStatus("Could not open: "+e.message,"err"); }
+}
+function copyNotes(){
+  var t=curTable(), idx=window.__viewIdx||[]; if(!t||!idx.length){ setStatus("Nothing to copy","err"); return; }
+  var out=[t.cols.join(" | ")+" | Flags"];
+  for(var i=0;i<idx.length && i<500;i++){ var row=t.rows[idx[i]], fl=t.flags[idx[i]], tg=[], cells=[];
+    for(var k=0;k<fl.t.length;k++) tg.push(fl.t[k][1]);
+    for(var c=0;c<row.length;c++) cells.push(typeof row[c]==="number"&&BYTECOL_RE.test(t.cols[c])?fmtBytes(row[c]):clip(row[c],200));
+    out.push(cells.join(" | ")+(tg.length?(" | "+tg.join(",")):"")); }
+  try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+Math.min(idx.length,500)+" rows to clipboard"+copyCapNote(idx),"ok"); }catch(e){ setStatus("Copy failed: "+e.message,"err"); }
+}
+function copyFindings(){
+  var out=["FortiGate log triage - "+DATA.host+" ("+nf(DATA.parsed)+" lines)"], SL=["INFO","LOW","MEDIUM","HIGH","CRITICAL"];
+  for(var i=0;i<FINDINGS.length;i++) out.push("["+SL[FINDINGS[i].s]+"] "+FINDINGS[i].t+(FINDINGS[i].d?(" - "+FINDINGS[i].d):""));
+  try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Findings copied","ok"); }catch(e){}
+}
+
+/* ---------- wiring ---------- */
+function init(){
+  try{ window.resizeTo(1400,940); }catch(e){}
+  $("apppill").innerHTML="app v"+APP_VERSION; $("apppill").title="This app v"+APP_VERSION+" - checking GitHub for a newer release\u2026";
+  try{ document.title="FortiGate Log Triage v"+APP_VERSION; }catch(e){}
+  $("tblScroll").onscroll=applyFreeze;
+  loadSettings();
+  $("hostName").onkeyup=function(){ HOST_TOUCHED=true; HOST_LOCK=false; syncOutDir(); };
+  $("outDir").onkeyup=function(){ OUT_TOUCHED=true; };
+  loadToolkitIoc();
+
+  var zoom=0.9, zContent=$("content");
+  function zoomBlock(el){ if(!el) return; el.style.zoom=zoom; el.style.width=(100/zoom)+"%"; el.style.boxSizing="border-box"; }
+  function applyZoom(){ zoomBlock(zContent); var hs=document.getElementsByTagName("header"); if(hs.length) zoomBlock(hs[0]);
+    var m=$("helpModal"); if(m){ var cards=m.getElementsByTagName("div"); for(var ci=0;ci<cards.length;ci++){ if(/(^|\s)mcard(\s|$)/.test(cards[ci].className+"")){ cards[ci].style.zoom=zoom; break; } } }
+    var p=Math.round(zoom*100)+"%"; $("fup").title="Larger text ("+p+")"; $("fdown").title="Smaller text ("+p+")"; }
+  applyZoom();
+  try{ window.onresize=function(){ try{ zContent.style.width=(100/zoom)+"%"; var hr=document.getElementsByTagName("header"); if(hr.length) hr[0].style.width=(100/zoom)+"%"; }catch(er){} }; }catch(eR){}
+  $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); };
+  $("fdown").onclick=function(){ zoom=Math.max(zoom-0.15,0.6); applyZoom(); };
+
+  $("openDirBtn").onclick=function(){ var d=trimStr($("outDir").value); if(!d){ setStatus("No output directory set","err"); return; } if(!folderExists(d)){ setStatus("Folder does not exist yet: "+d,"err"); return; }
+    try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+d+'"',1,false); }catch(e){} };
+  $("procBtn").onclick=processRun;
+  $("inPath").onchange=function(){ var x=trimStr(this.value); if(x){ hostGuessFrom(x); describeInput(x); } };
+  $("browseBtn").onclick=function(){
+    try{ var sha=new ActiveXObject("Shell.Application"); var fld=sha.BrowseForFolder(0,"Select the folder holding the FortiGate log exports (searched recursively).",0x51);
+      if(fld){ var p=""; try{ p=fld.Self.Path+""; }catch(e2){} if(/^[a-z]:\\|^\\\\/i.test(p)){ $("inPath").value=p; hostGuessFrom(p); describeInput(p); } } }
+    catch(e){ $("inPick").click(); } };
+  $("browseFileBtn").onclick=function(){ $("inPick").click(); };
+  $("inPick").onchange=function(){ if(this.value){ var x=this.value; $("inPath").value=x; hostGuessFrom(x); describeInput(x); } };
+  $("loadBtn").onclick=function(){ $("jsonPick").click(); };
+  $("jsonPick").onchange=function(){ if(this.value){ var p=this.value; LASTOUTDIR=parentDir(p); setStatus("Loading "+p,"muted"); window.setTimeout(function(){ loadJson(p); },50); } };
+  $("logToggle").onclick=function(){ var l=$("log");
+    if(l.style.display==="none"||!l.style.display){ if(!trimStr(l.innerHTML.replace(/<[^>]*>/g,""))){ l.innerHTML='<span class="muted">(empty - the engine log appears here after a run)</span>'; l.setAttribute("data-ph","1"); } l.style.display="block"; this.innerHTML="Hide log"; }
+    else { l.style.display="none"; this.innerHTML="Show log"; } };
+  $("iocBtn").onclick=function(){ showEl("iocWrap", /\bhide\b/.test($("iocWrap").className)); };
+  $("iocApply").onclick=function(){ applyIocs(); };
+  $("iocLoad").onclick=function(){ $("iocPick").click(); };
+  $("iocPick").onchange=function(){ if(this.value){ try{ $("iocBox").value=readUtf8(this.value); applyIocs(); }catch(e){ setStatus("Could not read IOC file: "+e.message,"err"); } } };
+  $("q").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer); qTimer=window.setTimeout(function(){ QUERY=trimStr($("q").value).toLowerCase(); renderTable(); },180); };
+  $("fAll").onclick=function(){ FLAGONLY=false; $("fAll").className="btn sm on"; $("fFlag").className="btn sm"; renderTable(); };
+  $("fFlag").onclick=function(){ FLAGONLY=true; $("fFlag").className="btn sm on"; $("fAll").className="btn sm"; renderTable(); };
+  $("dfrom").onchange=function(){ DFROM=dayNum(this.value); renderTable(); };
+  $("dto").onchange=function(){ DTO=dayNum(this.value); renderTable(); };
+  $("pFrom").onchange=function(){ var x=trimStr(this.value); if(/^\d{4}-\d{2}-\d{2}$/.test(x)){ $("dfrom").value=x; DFROM=dayNum(x); } };
+  $("pTo").onchange=function(){ var x=trimStr(this.value); if(/^\d{4}-\d{2}-\d{2}$/.test(x)){ $("dto").value=x; DTO=dayNum(x); } };
+  $("clearBtn").onclick=function(){ $("q").value=""; $("dfrom").value=""; $("dto").value=""; QUERY=""; DFROM=0; DTO=0; FLAGONLY=false; $("fAll").className="btn sm on"; $("fFlag").className="btn sm"; renderTable(); };
+  $("exportBtn").onclick=exportView;
+  $("fullCsvBtn").onclick=openFullCsv;
+  $("copyBtn").onclick=copyNotes;
+  $("detClose").onclick=function(){ showEl("detailCard",false); };
+  $("detCopy").onclick=copyDetail;
+
+  document.onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement;
+    if(t && /\bcgrip\b/.test((t.className||"")+"")) return;
+    var g=t; while(g && g.getAttribute && g.getAttribute("data-view")==null && g.getAttribute("data-sub")==null && g.tagName!=="BODY") g=g.parentNode;
+    if(g && g.getAttribute){ var dv=g.getAttribute("data-view"); if(dv){ setViewTab(dv); return; } var ds=g.getAttribute("data-sub"); if(ds){ SUB=ds; showEl("detailCard",false); renderAll(); return; } }
+    var fi=t&&t.getAttribute?t.getAttribute("data-fi"):null;
+    if(fi!=null && fi!==""){ var f=FINDINGS[parseInt(fi,10)]; if(f && f.view){ SUB=f.sub; FLAGONLY=false; $("fAll").className="btn sm on"; $("fFlag").className="btn sm";
+      if(f.q){ $("q").value=f.q; QUERY=f.q.toLowerCase(); } setViewTab(f.view); } return; }
+    var q=t&&t.getAttribute?t.getAttribute("data-q"):null;
+    if(q){ $("q").value=q; QUERY=q.toLowerCase(); renderTable(); return; }
+    if(VIEW==="ov") return;
+    var nd=t; while(nd && nd.tagName!=="TR"){ nd=nd.parentNode; if(nd&&nd.tagName==="TABLE"){ nd=null; break; } }
+    if(nd && nd.getAttribute && nd.getAttribute("data-i")!=null && nd.parentNode && nd.parentNode.parentNode && nd.parentNode.parentNode.id==="tbl"){
+      var ri=parseInt(nd.getAttribute("data-i"),10); renderDetail(ri);
+      var trs=$("tbl").getElementsByTagName("tr"), tb=curTable();
+      for(var z=0;z<trs.length;z++){ var di=trs[z].getAttribute("data-i"); if(di!=null){ var zi=parseInt(di,10), fl=tb.flags[zi], base=(fl&&fl.s)?("s"+fl.s):""; trs[z].className=(zi===ri)?((base?base+" ":"")+"sel"):base; } } }
+  };
+
+  var cli=parseCli(); try{ applyCli(cli); }catch(eC){ appendLog("CLI parse error: "+eC.message); }
+  bootLog("CLI: input="+(cli.input||"(none)")+" outDir="+(cli.outDir||"(none)")+" auto="+cli.auto);
+  if(!cli.input) setStatus("Pick a folder of FortiGate log exports (or one .log file), check the hostname, then Process \u2192 analyze.","muted");
+  bootLog("init done");
+}
+
+/* ---------- help / instructions ---------- */
+var GITHUB="https://github.com/bpmorris22/FortiGate-Log-Triage-Tool";
+function openUrl(u){ try{ new ActiveXObject("WScript.Shell").Run('"'+u+'"',1,false); }catch(e){ setStatus("Could not open browser: "+e.message,"err"); } }
+function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION; }catch(e){} showEl("helpModal",true); }
+function closeHelp(){ showEl("helpModal",false); }
+var MANUAL_URL="https://raw.githubusercontent.com/bpmorris22/FortiGate-Log-Triage-Tool/main/docs/FortiGate-Log-Triage-Manual.html";
+var MANUAL_FILE="FortiGate-Log-Triage-Manual.html";
+function openManualFile(path){ try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+path+'"',1,false); return true; } catch(e){ setStatus("Downloaded the manual, but could not open it: "+e.message,"err"); return false; } }
+function openInstructions(){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"); var dest=fso.GetSpecialFolder(2)+"\\"+MANUAL_FILE;
+  setStatus("Downloading the FortiGate Log Triage manual from GitHub\u2026","muted");
+  var ps1=fso.GetSpecialFolder(2)+"\\man_"+uid()+".ps1"; var dq=String(dest).replace(/'/g,"''"); var L=[];
+  L.push("$ErrorActionPreference='Stop'"); L.push("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12");
+  L.push("Invoke-WebRequest -UseBasicParsing -Uri '"+MANUAL_URL+"' -OutFile '"+dq+"' -Headers @{ 'User-Agent'='FortiGate-Log-Triage' }");
+  L.push("if((Get-Item '"+dq+"').Length -lt 2000){ throw 'downloaded file too small' }"); L.push("Write-Output 'MAN_OK'");
+  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); } catch(ew){ setStatus("Could not stage the manual download: "+ew.message,"err"); return; }
+  var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']); try{ fso.DeleteFile(ps1); }catch(e0){}
+  if((r.log+"").indexOf("MAN_OK")>=0 && fileExists(dest)){ if(openManualFile(dest)) setStatus("Manual downloaded and opened in your browser.","ok"); }
+  else { appendLog("--- manual download ---\n"+r.log);
+    if(fileExists(dest)){ if(openManualFile(dest)) setStatus("Download failed (offline?) - opened the previously downloaded copy.","muted"); }
+    else setStatus("Manual download failed (offline, or not published yet). The Help button covers the essentials.","err"); }
+}
+
+/* ---------- command line: "<input>" ["<outDir>"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd] ---------- */
+function getCommandLine(){
+  try{ var cl=fgHta.commandLine+""; if(cl && cl!=="undefined") return cl; }catch(e){}
+  try{ var lp=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); var fn=lp.substring(lp.lastIndexOf("\\")+1).toLowerCase(); if(!fn) return "";
+    var loc=new ActiveXObject("WbemScripting.SWbemLocator"), svc=loc.ConnectServer(".","root\\cimv2");
+    var q=svc.ExecQuery("SELECT CommandLine,CreationDate FROM Win32_Process WHERE Name='mshta.exe'"), best="", bestDate="", en=new Enumerator(q);
+    for(; !en.atEnd(); en.moveNext()){ var pr=en.item(); var pcl=(pr.CommandLine==null?"":pr.CommandLine+""); if(pcl.toLowerCase().indexOf(fn)<0) continue;
+      var cd=(pr.CreationDate==null?"":pr.CreationDate+""); if(!best || cd>bestDate){ best=pcl; bestDate=cd; } }
+    return best; }catch(e2){}
+  return "";
+}
+function tokenizeCmdTail(){ var cl=getCommandLine(); if(!cl) return [];
+  var m=cl.match(/\.hta"?/i); var tail=m?cl.substring(m.index+m[0].length):cl;
+  var toks=[],i=0,n=tail.length,cur="",inq=false;
+  while(i<n){ var c=tail.charAt(i); if(inq){ if(c==='"'){inq=false;} else cur+=c; i++; continue; }
+    if(c==='"'){ inq=true; i++; continue; } if(c===' '||c==='\t'){ if(cur!==""){toks.push(cur);cur="";} i++; continue; } cur+=c; i++; }
+  if(cur!=="") toks.push(cur); return toks; }
+function applyCaseWindow(from,to){
+  if(from && /^\d{4}-\d{2}-\d{2}$/.test(from)){ CASE_FROM=from; $("dfrom").value=from; $("pFrom").value=from; DFROM=dayNum(from); }
+  if(to && /^\d{4}-\d{2}-\d{2}$/.test(to)){ CASE_TO=to; $("dto").value=to; $("pTo").value=to; DTO=dayNum(to); }
+  if(CASE_FROM||CASE_TO) appendLog("CLI: case window "+(CASE_FROM||"\u2026")+" .. "+(CASE_TO||"\u2026")+" - prefilled the date filter (filter only, never scored)");
+}
+function parseCli(){ var toks=tokenizeCmdTail(), cli={input:"",outDir:"",auto:false,from:"",to:""};
+  for(var i=0;i<toks.length;i++){ var t=toks[i];
+    if(/^[\/\-]{1,2}auto$/i.test(t)){ cli.auto=true; continue; }
+    var fm=t.match(/^[\/\-]{1,2}from[:=](\d{4}-\d{2}-\d{2})$/i); if(fm){ cli.from=fm[1]; continue; }
+    var tm=t.match(/^[\/\-]{1,2}to[:=](\d{4}-\d{2}-\d{2})$/i); if(tm){ cli.to=tm[1]; continue; }
+    if(/^[\/\-]/.test(t)) continue;
+    if(!cli.input) cli.input=t; else if(!cli.outDir) cli.outDir=t; }
+  return cli; }
+function newestRunJson(dir){
+  try{ var fso=new ActiveXObject("Scripting.FileSystemObject"), fc=new Enumerator(fso.GetFolder(dir).Files), best="", bd=0;
+    for(; !fc.atEnd(); fc.moveNext()){ var f=fc.item(); if(/-FortiGate-\d{8}_\d{6}\.json$/i.test(f.Name)){ var d=+new Date(f.DateLastModified); if(d>bd){ bd=d; best=f.Path+""; } } }
+    return best; }catch(e){ return ""; }
+}
+function applyCli(cli){ if(!cli.input) return false;
+  applyCaseWindow(cli.from, cli.to);
+  if(/\.json$/i.test(cli.input) && fileExists(cli.input)){ LASTOUTDIR=parentDir(cli.input); window.setTimeout(function(){ loadJson(cli.input); },60); return true; }
+  if(folderExists(cli.input)){ var nj=newestRunJson(cli.input); if(nj){ appendLog("CLI: reloading the newest run in "+cli.input); LASTOUTDIR=cli.input; window.setTimeout(function(){ loadJson(nj); },60); return true; } }
+  if(!fileExists(cli.input) && !folderExists(cli.input)){ setStatus("CLI input not found: "+cli.input,"err"); return false; }
+  $("inPath").value=cli.input;
+  if(cli.outDir){ $("outDir").value=cli.outDir; OUT_TOUCHED=true; var g=guessHost(cli.outDir); if(g){ $("hostName").value=sanitHost(g); HOST_LOCK=true; } }
+  hostGuessFrom(cli.input); describeInput(cli.input);
+  if(cli.auto){ appendLog("CLI: /auto - processing "+cli.input); window.setTimeout(autoProcess,300); }
+  else setStatus("CLI: input set - check the hostname, then click 'Process \u2192 analyze'.","muted");
+  return true; }
+
+/* ---------- self-update (family) ---------- */
+var SELF_REPO="bpmorris22/FortiGate-Log-Triage-Tool", SELF_HTA="FortiGate-Log-Triage.hta", SELF_LATEST="", SELF_ASSET_URL="";
+function selfVerNewer(r,l){ var a=String(r).split("."),b=String(l).split("."),n=Math.max(a.length,b.length); for(var i=0;i<n;i++){ var x=parseInt(a[i],10)||0,y=parseInt(b[i],10)||0; if(x!==y) return x>y; } return false; }
+function selfPath(){ try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); if(/\.hta$/i.test(p) && fileExists(p)) return p; }catch(e){} return (htaFolder()||"")+"\\"+SELF_HTA; }
+function checkSelfUpdate(){
+  try{ var x=new ActiveXObject("MSXML2.XMLHTTP.6.0"); x.open("GET","https://api.github.com/repos/"+SELF_REPO+"/releases/latest",true);
+    try{ x.setRequestHeader("User-Agent",SELF_HTA); }catch(eh){}
+    x.onreadystatechange=function(){ if(x.readyState!==4) return;
+      try{ var ap=$("apppill");
+        if(x.status!==200){ if(ap) ap.title="This app v"+APP_VERSION+" - release check unavailable (offline, or no public release yet)"; return; }
+        var t=x.responseText+"", m=t.match(/"tag_name"\s*:\s*"v?([0-9.]+)"/i); if(!m) return;
+        var latest=m[1]; if(!selfVerNewer(latest,APP_VERSION)){ if(ap){ ap.className="pill ok"; ap.title="Up to date - v"+APP_VERSION+" is the latest release."; } return; }
+        var url="", re=/"browser_download_url"\s*:\s*"([^"]+\.hta)"/ig, mm; while((mm=re.exec(t))){ if(mm[1].toLowerCase().indexOf(SELF_HTA.toLowerCase())>=0){ url=mm[1]; break; } if(!url) url=mm[1]; }
+        if(!url) url="https://github.com/"+SELF_REPO+"/releases/download/v"+latest+"/"+SELF_HTA;
+        SELF_LATEST=latest; SELF_ASSET_URL=url;
+        if(ap){ ap.className="pill bad"; ap.innerHTML="app v"+APP_VERSION+" &middot; update v"+latest; ap.title="A newer version (v"+latest+") is on GitHub - click the Update button."; }
+        var b=$("selfUpd"); if(b){ b.innerHTML="Update to v"+latest; b.className="btn primary"; }
+      }catch(e){} };
+    x.send(); }catch(e){}
+}
+function doSelfUpdate(){
+  if(!SELF_ASSET_URL){ setStatus("No update available (or offline).","muted"); return; }
+  var target=selfPath(); if(!target || !/\.hta$/i.test(target)){ setStatus("Can't locate this app's own file to update in place.","err"); return; }
+  if(!confirm("Download "+SELF_HTA+" v"+SELF_LATEST+" and replace this file?\n\n"+target+"\n\nAfter it downloads, close and reopen the app to run the new version.")) return;
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), tmp=fso.GetSpecialFolder(2)+"", ps1=tmp+"\\selfupd_"+uid()+".ps1";
+  var tq=String(target).replace(/'/g,"''"), uq=String(SELF_ASSET_URL).replace(/'/g,"''");
+  var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12","$u='"+uq+"'","$t='"+tq+"'",
+    "$tmp=Join-Path $env:TEMP ('selfupd_'+[guid]::NewGuid().ToString('N')+'.hta')","Invoke-WebRequest -Uri $u -OutFile $tmp -Headers @{ 'User-Agent'='"+SELF_HTA+"' }",
+    "if((Get-Item $tmp).Length -lt 2000){ throw 'downloaded file too small' }","Copy-Item $tmp $t -Force","Remove-Item $tmp -Force -ErrorAction SilentlyContinue","Write-Output 'SELFUPD_OK'"];
+  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(ew){ setStatus("Self-update stage failed: "+ew.message,"err"); return; }
+  try{ var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']); try{ fso.DeleteFile(ps1); }catch(e0){}
+    if((r.log+"").indexOf("SELFUPD_OK")>=0){ var b=$("selfUpd"); if(b) b.className="btn primary hide"; setStatus("Updated to v"+SELF_LATEST+" - CLOSE and reopen the app.","ok"); try{ alert("Update installed (v"+SELF_LATEST+").\n\nClose and reopen "+SELF_HTA+"."); }catch(e){} }
+    else { appendLog("--- self-update ---\n"+r.log); setStatus("Self-update failed - see log.","err"); } }catch(e){ setStatus("Self-update failed: "+e.message,"err"); }
+}
+window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }catch(e){} };
+</script>
+<div id="helpModal" class="modal hide" onclick="if((event.srcElement||{}).id==='helpModal')closeHelp()">
+  <div class="mcard">
+    <span class="x" onclick="closeHelp()" title="Close">&times;</span>
+    <h2>FortiGate Log Triage <span class="muted" style="font-size:13px;font-weight:400" id="helpVer"></span></h2>
+    <div class="gh muted">GitHub: <span class="lnk" onclick="openUrl(GITHUB)">https://github.com/bpmorris22/FortiGate-Log-Triage-Tool</span></div>
+    <p>A single-file GUI for <b>FortiGate / FortiOS log triage</b>. It reads the logs exactly as they come off the appliance - the <b>Log &amp; Report "Download"</b> files from the GUI, syslog captures, FortiAnalyzer raw exports (key=value lines; plain or <code>.gz</code>) - and turns a folder of mixed log types into the questions an incident responder asks of a firewall: who logged in to it, what changed, who came in over VPN, what was exposed, what left, and what the security profiles caught.</p>
+    <h3>Quick start</h3>
+    <ul>
+      <li>Point the input at the folder of exported logs (any mix of Forward / Local / System / User / VPN / AV / IPS / App-control / Web-filter / SSL / DNS logs; every file is sniffed, non-FortiGate files are skipped) or at one file.</li>
+      <li>Type the firewall's name in <b>Target hostname</b> (filled automatically when the logs carry <code>devname=</code>), then <b>Process &rarr; analyze</b>. About 15 seconds per GB.</li>
+      <li>Start on <b>Overview</b>: the findings list is generated from every table; click one to open the table behind it. Then work the tabs.</li>
+      <li><b>Load existing run (.json)&hellip;</b> reopens a previous run instantly (no reprocessing).</li>
+    </ul>
+    <h3>Tabs</h3>
+    <ul>
+      <li><b>Admin access</b> - every admin login attempt per source and per username, plus each successful login / logout. Failures from public IPs against a WAN address mean the management interface is exposed.</li>
+      <li><b>Config &amp; system</b> - every configuration change (path, object, old&rarr;new attributes, who, from where), notable system events, and a count of every event type.</li>
+      <li><b>VPN</b> - SSL-VPN logins per user and source (with country), IPsec per tunnel and peer (phase-1 errors from unknown peers = scanning), and the VPN event stream.</li>
+      <li><b>User auth</b> - firewall user authentication (captive portal / LDAP / FSSO) per user, and failures per source (spraying).</li>
+      <li><b>Traffic</b> - Internet destinations, internal sources, inbound from the Internet, what accepted inbound sessions (exposure), internal admin-port fan-out (lateral movement), ports &amp; services, the largest single uploads. Direction comes from the interface roles (lan / wan) so VPN overlays with odd addressing are classified correctly.</li>
+      <li><b>Security profiles</b> - antivirus detections, IPS, application control (remote-access tools flagged), web filter by site and category, SSL inspection anomalies, other UTM.</li>
+      <li><b>IOC hits</b> - with an IOC list set before processing, every raw line is swept (whole-token match) and each hit keeps the full line.</li>
+      <li><b>Timeline</b> - admin sessions, config changes, VPN logins, AV / IPS / app-control first sightings and IOC hits on one stream. <b>Sources</b> - files read, coverage per log type, lines per day, device names.</li>
+    </ul>
+    <h3>Flags (rules live in the app, so they change without reprocessing)</h3>
+    <ul>
+      <li><b>High</b>: admin login from a public IP; admin or SSL-VPN success after repeated failures; admin / API / local-user account changes; changes made from a public IP; antivirus detection not blocked; IPS critical / high; remote-access / proxy / P2P application allowed; malicious-category site allowed; single sessions or destinations over 1 GB out; one source reaching 20+ internal hosts on an admin port; admin services (RDP / SMB / SSH / WinRM) accepting sessions from the Internet; any IOC hit.</li>
+      <li><b>Medium</b>: brute force (20+ failed admin logins); policy / VIP / interface / VPN / logging config changes; SSL-VPN login from outside the usual country; uploads over 100 MB; remote-access apps blocked; malicious-category sites blocked; password spraying (one source failing for 5+ users); one source reaching 10+ internal hosts on an admin port; Internet sources whose sessions were accepted; logging turned off on a policy.</li>
+      <li><b>Coverage gap</b> (Overview): a log type spanning less than half the window of the others - usually the GUI download's row limit. Export busy log types day by day.</li>
+    </ul>
+    <h3>Command line</h3>
+    <p><code>mshta "FortiGate-Log-Triage.hta" "&lt;input&gt;" ["&lt;outDir&gt;"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]</code></p>
+    <ul>
+      <li><code>&lt;input&gt;</code> - a log folder or file (processed with <code>/auto</code>), a run <code>.json</code>, or an output folder (reloads its newest run).</li>
+      <li><code>/from: /to:</code> - case window (UTC, inclusive): prefills the date filter and is recorded in runinfo; it only filters, never scores. The engine skips lines outside it only when you tick "also limit processing".</li>
+      <li>Output goes to <code>_Processed\&lt;host&gt;\FortiGate-Log-Triage</code> next to this app (family convention); a <code>runinfo.json</code> provenance entry with a triage summary is appended per run. An <code>IOC.txt</code> next to the app is merged into the IOC box at launch.</li>
+    </ul>
+    <h3>Notes</h3>
+    <ul>
+      <li>All times are UTC (from FortiOS <code>eventtime</code>; <code>date</code>+<code>time</code>+<code>tz</code> when it is missing). The device timezone is shown on Overview.</li>
+      <li>Only traffic that crosses the firewall is logged - same-subnet traffic never appears, and a policy with logging off leaves no trace.</li>
+      <li>FortiAnalyzer CSV exports and CEF-format syslog are not read in this version (key=value only).</li>
+      <li>Columns are resizable; Export view writes every row the view shows; Open full CSV opens the uncapped table.</li>
+    </ul>
+    <p class="muted" style="font-size:11px">MIT &copy; 2026 Ben Morris - <span class="lnk" onclick="copyFindings()">copy the findings list to the clipboard</span></p>
+  </div>
+</div>
+</body>
+</html>

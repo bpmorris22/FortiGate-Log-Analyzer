@@ -1,0 +1,19 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# runtime output (created next to the HTA when it runs) - may contain case data, never commit
+_Processed/
+runinfo.json
+IOC.txt
+IOC.csv
+*.settings.json
+*.boot.log
+FortiGate-Engine.ps1
+*-FortiGate-*.json
+*.csv
+
+# raw firewall logs
+*.log
+*.log.gz
+*.gz
