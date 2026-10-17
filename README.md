@@ -32,6 +32,7 @@ The full field manual - getting logs off the FortiGate, every tab, the flag refe
 2. Run it, pick the folder of exported logs (every file is sniffed; non-FortiGate files are skipped) or one log file.
 3. Check **Target hostname** (filled from `devname=` when the logs carry it), then **Process -> analyze**.
 4. Start on **Overview**: the findings list is generated from every table - click a finding to open the table behind it.
+5. Narrow with the filters: **Pivot** on an IP / CIDR / user / host across every tab (each tab shows how many rows match), **High only**, **Internet IPs only**, **Allowed / succeeded only**, **Off-hours only** (firewall local time), **Country** and **Volume**. Hover any control, tab, column or flag for what it means.
 
 ## Notes
 

@@ -62,6 +62,7 @@
   .btn .cnt{color:#8b949e;font-size:11px;margin-left:4px}
   .btn.on .cnt{color:#cfe2ff}
   .btn .fl{color:#ff6b6b;font-size:11px;margin-left:4px;font-weight:700}
+  .btn .pv{color:#39d0c8;font-size:11px;margin-left:4px;font-weight:700}
   .row{white-space:nowrap}
   .chiplab{display:inline-block;width:58px;font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.4px}
   .stat{display:inline-block;background:#1c2330;border:1px solid #30363d;border-radius:8px;padding:6px 12px;margin:0 6px 6px 0;min-width:70px;vertical-align:top}
@@ -119,13 +120,13 @@
 </head>
 <body>
 <header>
-  <h1>FortiGate Log Analyzer <small>- FortiOS appliance logs: admin access, config, VPN, traffic, security profiles</small></h1>
+  <h1 title="FortiGate Log Analyzer - triage of FortiGate / FortiOS logs exactly as they come off the appliance. Hover any button, tab, column or flag for what it does or means.">FortiGate Log Analyzer <small>- FortiOS appliance logs: admin access, config, VPN, traffic, security profiles</small></h1>
   <span class="pill" id="apppill" title="This app's version">app: checking&hellip;</span>
-  <span class="pill" id="srcpill">no data loaded</span>
+  <span class="pill" id="srcpill" title="The run currently loaded (hover for its input path)">no data loaded</span>
   <span style="float:right">
     <span class="pill" id="procTimer" title="Processing time. Starts when a run begins and stops when the engine finishes." style="min-width:150px;text-align:center;display:inline-block">Idle</span>
     <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest FortiGate Log Analyzer manual from GitHub and open it in your browser">Instructions</button>
-    <button class="btn" id="helpBtn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
+    <button class="btn" id="helpBtn" onclick="openHelp()" title="Help: quick start, tabs, filters, every flag rule, command line - and the GitHub link">Help</button>
     <button class="btn primary hide" id="selfUpd" onclick="doSelfUpdate()" title="A newer version is available on GitHub">Update</button>
     <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
     <button class="btn" id="fup" title="Larger text">A+</button>
@@ -136,38 +137,38 @@
 
   <!-- CONTROL PANEL -->
   <div class="card">
-    <h3>FortiGate Log Analyzer control panel</h3>
+    <h3 title="Where a run is set up: the input logs, the firewall's name, where output goes, an optional case window and IOC list. Then Process, or reload an earlier run.">FortiGate Log Analyzer control panel</h3>
     <label class="fld" title="A folder of FortiGate logs (searched recursively; every file whose first 8 KB holds FortiOS key=value lines is read - .log, .txt, no extension, .gz), or one log file. Several paths can be separated with |.">Input - a folder of FortiGate log exports, or one log file (.log / .txt / .gz, key=value format)</label>
     <input class="txt wide" id="inPath" value="">
     <input type="file" id="inPick" style="display:none">
-    <button class="btn" id="browseBtn">Folder&hellip;</button>
-    <button class="btn" id="browseFileBtn">File&hellip;</button>
+    <button class="btn" id="browseBtn" title="Pick the folder holding the FortiGate log exports - it is searched recursively and every file is sniffed (non-FortiGate files are listed and skipped)">Folder&hellip;</button>
+    <button class="btn" id="browseFileBtn" title="Pick a single log file (.log / .txt / .gz)">File&hellip;</button>
     <span class="muted" id="inInfo" style="font-size:11px;margin-left:6px"></span>
     <label class="fld" title="Required before processing. Filled from the logs' devname= field when they carry one (GUI downloads usually do not) - otherwise type the firewall's name.">Target hostname (required) - the firewall's name; names the output folder _Processed\&lt;host&gt;\FortiGate-Log-Analyzer next to this app</label>
     <input class="txt" id="hostName" value="" style="width:260px" placeholder="e.g. FGT-EDGE-01">
     <span id="hostHint" class="maxwarn hide"></span>
-    <label class="fld">Output directory</label>
+    <label class="fld" title="Where the run JSON, the full CSVs and runinfo.json are written. Defaults to _Processed\&lt;host&gt;\FortiGate-Log-Analyzer next to this app (toolkit convention); type a path to override.">Output directory</label>
     <input class="txt wide" id="outDir" value="">
-    <button class="btn" id="openDirBtn">Open folder</button>
+    <button class="btn" id="openDirBtn" title="Open the output directory in Explorer">Open folder</button>
     <label class="fld" title="UTC calendar dates, inclusive. Prefilled by the Artifact-Finder / CLI /from: /to:. Always filters the result tables; tick the box to also make the engine skip lines outside the window (smaller, faster, but the aggregates then cover only the window).">Case window (UTC, optional)</label>
     <input class="txt mono" id="pFrom" placeholder="from YYYY-MM-DD" style="width:140px">
     <span class="muted">&rarr;</span>
     <input class="txt mono" id="pTo" placeholder="to YYYY-MM-DD" style="width:140px">
-    <label class="muted" style="font-size:12px;margin-left:8px"><input type="checkbox" id="pWinEngine"> also limit processing to this window</label>
+    <label class="muted" style="font-size:12px;margin-left:8px" title="Unticked (default): the engine reads everything and the window only filters the tables. Ticked: the engine skips lines outside the window - faster and smaller, but every aggregate then covers only the window."><input type="checkbox" id="pWinEngine"> also limit processing to this window</label>
     <div style="margin-top:10px">
-      <button class="btn primary" id="procBtn">Process &rarr; analyze</button>
+      <button class="btn primary" id="procBtn" title="Run the engine over the input (about 15 s per GB), write the run to the output directory and load it. Needs an input and a Target hostname.">Process &rarr; analyze</button>
       <button class="btn" id="loadBtn" title="Reload a previous run: pick the &lt;host&gt;-FortiGate-&lt;stamp&gt;.json it wrote">Load existing run (.json)&hellip;</button>
       <input type="file" id="jsonPick" style="display:none">
       <span class="sep"></span>
-      <button class="btn" id="iocBtn">IOC / keywords&hellip;</button>
-      <button class="btn" id="logToggle">Show log</button>
+      <button class="btn" id="iocBtn" title="Show / hide the IOC list. Terms set before Process are swept through every raw log line; terms applied after a run gather matching table rows at once (IOC hits tab).">IOC / keywords&hellip;</button>
+      <button class="btn" id="logToggle" title="Show / hide the engine log of the last run (files read, line counts, warnings)">Show log</button>
       <span class="muted" id="status" style="margin-left:8px"></span>
     </div>
     <div id="iocWrap" class="hide" style="margin-top:8px">
-      <label class="fld">IOC / keyword list - comma or newline separated. At processing time every raw log line is swept for each term (whole-token, case-insensitive: 1.2.3.4 does not match 11.2.3.45) - hits land on the IOC tab with the full line. In the viewer the terms also flag any table row whose text contains them.</label>
+      <label class="fld" title="One term per line or comma separated; lines starting with # are comments. An IOC.txt next to this app is merged in at launch.">IOC / keyword list - comma or newline separated. At processing time every raw log line is swept for each term (whole-token, case-insensitive: 1.2.3.4 does not match 11.2.3.45) - hits land on the IOC tab with the full line. In the viewer the terms also flag any table row whose text contains them.</label>
       <textarea id="iocBox" rows="3" style="width:70%;vertical-align:top"></textarea>
-      <button class="btn" id="iocApply">Apply</button>
-      <button class="btn" id="iocLoad">Load file&hellip;</button>
+      <button class="btn" id="iocApply" title="Apply the list now: flag matching rows in every table and gather them on IOC hits &gt; Matches in tables. If the loaded run was not swept for these terms you are offered a re-sweep of the raw logs.">Apply</button>
+      <button class="btn" id="iocLoad" title="Replace the list with the contents of a text file (one term per line)">Load file&hellip;</button>
       <input type="file" id="iocPick" style="display:none">
       <span class="muted" id="iocInfo" style="font-size:11px"></span>
     </div>
@@ -182,28 +183,42 @@
     </div>
 
     <div id="ovPane">
-      <div class="card"><h3 id="ovTitle">Overview</h3><div id="statbar"></div></div>
-      <div class="card"><h3>Findings <span class="muted" style="text-transform:none;letter-spacing:0">- generated from the tables by this app's rules (see Help); click a finding to open its table</span></h3><div id="findings"></div></div>
-      <div class="card"><h3>Log coverage <span class="muted" style="text-transform:none;letter-spacing:0">- what time span each log type actually covers (an export row cap shows up here as a short bar)</span></h3><div id="coverage"></div></div>
+      <div class="card"><h3 id="ovTitle" title="The run at a glance: volume, time span, findings counts and the device the logs came from">Overview</h3><div id="statbar"></div></div>
+      <div class="card"><h3 title="One-line conclusions built from every table by this app's rules, most severe first. CRITICAL / HIGH need checking; MEDIUM is worth a look; LOW / INFO are context. Click one to open its table.">Findings <span class="muted" style="text-transform:none;letter-spacing:0">- generated from the tables by this app's rules (see Help); click a finding to open its table</span></h3><div id="findings"></div></div>
+      <div class="card"><h3 title="The time span each log type covers, against the span of all logs. A short bar on a busy log type usually means an export row limit cut it off - conclusions from it only hold for that span.">Log coverage <span class="muted" style="text-transform:none;letter-spacing:0">- what time span each log type actually covers (an export row cap shows up here as a short bar)</span></h3><div id="coverage"></div></div>
     </div>
 
     <div class="card hide" id="tblCard">
-      <h3 id="tableTitle">Records</h3>
-      <div class="row" style="margin-bottom:8px">
-        <input class="txt" id="q" placeholder="search all columns&hellip;" style="width:260px">
+      <h3 id="tableTitle" title="The table on screen. The line under the buttons explains what each row is; hover a column header for what the column means.">Records</h3>
+      <div class="row" style="margin-bottom:6px">
+        <input class="txt" id="q" placeholder="search all columns&hellip;" style="width:240px" title="Search this table: case-insensitive substring over every column and the flag names (e.g. 'phishing', 'FAIL-THEN', '10.10.20.'). Applies to this table only.">
         <span class="sep"></span>
-        <button class="btn sm on" id="fAll">All rows</button>
-        <button class="btn sm" id="fFlag">Flagged only</button>
+        <button class="btn sm on" id="fAll" title="Show every row (subject to the other filters)">All rows</button>
+        <button class="btn sm" id="fFlag" title="Only rows flagged medium or high (amber or red) by this app's rules">Flagged</button>
+        <button class="btn sm" id="fHigh" title="Only rows flagged high (red) - the shortest path to what needs checking first">High only</button>
         <span class="sep"></span>
-        <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:130px" title="Activity window (UTC): an aggregate row passes when its First..Last span overlaps the window; an event row when its time falls inside">
+        <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:130px" title="Activity window (UTC), inclusive: an aggregate row passes when its First..Last span overlaps the window; an event row when its time falls inside">
         <span class="muted">&rarr;</span>
-        <input class="txt mono" id="dto" placeholder="to YYYY-MM-DD" style="width:130px" title="Activity window (UTC): an aggregate row passes when its First..Last span overlaps the window; an event row when its time falls inside">
+        <input class="txt mono" id="dto" placeholder="to YYYY-MM-DD" style="width:130px" title="Activity window (UTC), inclusive: an aggregate row passes when its First..Last span overlaps the window; an event row when its time falls inside">
         <span class="sep"></span>
-        <button class="btn" id="clearBtn">clear</button>
-        <button class="btn" id="exportBtn" title="Write the rows this view shows (all of them, not just the first 6000 drawn) to a CSV in the output folder">Export view &rarr; CSV</button>
-        <button class="btn" id="fullCsvBtn" title="Open this table's full CSV (the engine writes every row, uncapped)">Open full CSV</button>
-        <button class="btn" id="copyBtn">Copy for case notes</button>
+        <button class="btn" id="clearBtn" title="Clear every filter on this screen - search, severity, date window, pivot, Internet / allowed / off-hours toggles, country and volume">clear all</button>
+        <button class="btn" id="exportBtn" title="Write the rows this view shows (all of them, not just the first 6000 drawn) to a CSV in the output folder, with their flags">Export view &rarr; CSV</button>
+        <button class="btn" id="fullCsvBtn" title="Open this table's full CSV (the engine writes every row, uncapped) in the default CSV program">Open full CSV</button>
+        <button class="btn" id="copyBtn" title="Copy the rows this view shows (up to 500) to the clipboard as pipe-separated text for case notes">Copy for case notes</button>
         <span class="muted" id="count" style="margin-left:8px"></span>
+      </div>
+      <div class="row" id="filtRow" style="margin-bottom:8px;white-space:normal">
+        <span class="chiplab" title="Pivot: follow one indicator across every tab">pivot</span>
+        <input class="txt mono" id="pivot" placeholder="IP, CIDR, user or host&hellip;" style="width:240px" title="Pivot on one indicator across ALL tabs: an IP (198.51.100.23), a CIDR range (198.51.100.0/24), a user name or a host / domain. Whole-token match (1.2.3.4 does not match 11.2.3.45). Stays applied when you change tabs; every tab and sub-tab button shows how many rows match, and Overview lists them. Click an IP in the row detail to pivot on it.">
+        <span id="pivotInfo" class="muted" style="font-size:11px"></span>
+        <span class="sep"></span>
+        <button class="btn sm" id="fPub" title="Only rows whose source, destination or remote address (SrcIP / DstIP / RemoteIP / Src) is a public Internet address - e.g. admin attempts from the Internet, VPN logins from outside, UTM events involving external hosts. Address class only: sites using public space internally will see those rows too.">Internet IPs only</button>
+        <button class="btn sm" id="fThru" title="Only what got through: accepted sessions, successful admin / VPN / user logins, tunnels that came up, and security-profile events whose outcome was allowed (monitored, passthrough...). Blocked and denied activity is hidden.">Allowed / succeeded only</button>
+        <button class="btn sm" id="fOff" title="Only events outside business hours in the FIREWALL's own timezone (from the logs' tz= field): before 07:00, from 19:00, or on Saturday / Sunday. Event tables only (rows with a single time). Useful for admin sessions, config changes, VPN logins and the timeline.">Off-hours only</button>
+        <span id="ctryWrap" class="hide"><span class="sep"></span><span class="chiplab" title="Filter by country (FortiGuard geolocation in the log)">country</span>
+          <select id="fCtry" title="Only rows from / to one country, as FortiOS geolocated it (Country / SrcCountry column). The list shows this table's countries with their row counts. Reserved = private / internal address."><option value="">all countries</option></select></span>
+        <span id="bytesWrap" class="hide"><span class="sep"></span><span class="chiplab" title="Filter by transfer volume">volume</span>
+          <select id="fBytes" title="Only rows where at least one byte column (bytes out, in, sent, received...) reaches this size - for spotting bulk transfers"><option value="0">any size</option><option value="10485760">&ge; 10 MB</option><option value="104857600">&ge; 100 MB</option><option value="1073741824">&ge; 1 GB</option></select></span>
       </div>
       <div class="muted" id="tblNote" style="font-size:12px;margin-bottom:6px"></div>
       <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
@@ -211,7 +226,7 @@
     </div>
 
     <div class="card hide" id="detailCard">
-      <h3>Row detail <span class="lnk" id="detCopy" style="float:right;margin-left:12px">copy row</span><span class="lnk" id="detClose" style="float:right">close &times;</span></h3>
+      <h3 title="Every field of the row you clicked, untruncated, with its flags">Row detail <span class="lnk" id="detCopy" style="float:right;margin-left:12px" title="Copy every field of this row to the clipboard (one field per line)">copy row</span><span class="lnk" id="detClose" style="float:right" title="Close the detail pane">close &times;</span></h3>
       <div id="detBody"></div>
     </div>
   </div>
@@ -1183,13 +1198,13 @@ function bootLog(msg){
 window.onerror=function(msg,url,line){ bootLog("ONERROR line "+line+": "+msg); return false; };
 bootLog("script top-level reached");
 
-var APP_VERSION = "0.2.3";
+var APP_VERSION = "0.2.4";
 var APP_NAME = "FortiGate-Log-Analyzer";
 var MAXROWS = 6000;
 var DATA = null;                 // the loaded engine JSON
 var TABLES = {};                 // name -> {cols, rows, total, ix:{col->i}, flags:[{s,t[]}]}
 var VIEW = "ov", SUB = "";
-var QUERY = "", FLAGONLY = false, DFROM = 0, DTO = 0;
+var QUERY = "", DFROM = 0, DTO = 0;
 var SORTS = {};                  // table -> {k, dir}
 var IOCS = [];
 var LASTOUTDIR = "", JSONPATH = "";
@@ -1328,7 +1343,7 @@ function hostHint(name, src){
   LOGHOST={name:name||"", src:src||""};
   var cur=sanitHost($("hostName").value), h=sanitHost(name||"");
   if(!h || h.toLowerCase()===cur.toLowerCase()){ showEl("hostHint",false); return; }
-  $("hostHint").innerHTML='The logs name this firewall <b>'+esc(h)+'</b> ('+esc(src)+') - <span class="lnk" data-usehost="'+esc(h)+'">use it</span>';
+  $("hostHint").innerHTML='The logs name this firewall <b>'+esc(h)+'</b> ('+esc(src)+') - <span class="lnk" data-usehost="'+esc(h)+'" title="Use the name found in the logs as the Target hostname (and output folder)">use it</span>';
   $("hostHint").title="Found in the logs: "+src+". Click 'use it' to name the output folder after it.";
   showEl("hostHint",true);
 }
@@ -1406,7 +1421,7 @@ function applyIocs(quiet){
   var parts=String($("iocBox").value).split(/[\r\n,;]+/), out=[];
   for(var i=0;i<parts.length;i++){ var s=trimStr(parts[i]).toLowerCase(); if(s && s.charAt(0)!=="#" && s.length>=3) out.push(s); }
   IOCS=out; $("iocInfo").innerHTML=IOCS.length?(nf(IOCS.length)+" term(s) active"):"no terms";
-  if(DATA){ computeFlags(); buildFindings(); renderAll(); }
+  if(DATA){ computeFlags(); buildFindings(); computePivotCounts(); renderAll(); }
   if(quiet===true) return;
   if(!IOCS.length){ setStatus("IOC list cleared","ok"); return; }
   var miss=unsweptTerms(), vt=TABLES.ioc_view?TABLES.ioc_view.total:0;
@@ -1530,7 +1545,7 @@ function loadJson(path){
   if(!trimStr($("hostName").value) && obj.host) $("hostName").value=obj.host;
   /* the engine records devname= values and hostname-setting events in the devices table - offer them if they differ */
   var dt=TABLES.devices; if(dt){ for(var di=0;di<dt.rows.length;di++){ var dn=dt.rows[di][dt.ix["DevName"]]; if(dn){ hostHint(dn, String(dt.rows[di][dt.ix["DevID"]]).indexOf("hostname setting")>=0?"hostname setting event":"devname="); break; } } }
-  computeFlags(); buildFindings();
+  computeFlags(); buildFindings(); DEVTZMIN=null; computePivotCounts();
   $("srcpill").innerHTML=esc(obj.host)+" &middot; "+nf(obj.parsed)+" lines"; $("srcpill").title=obj.input;
   showEl("results",true);
   if(!SUB) SUB="";
@@ -1809,6 +1824,89 @@ var TABLE_NOTES={
   vpn_events:"VPN events in time order (IPsec statistics / progress noise left out). The full CSV is in file order.",
   timeline:"Admin sessions, config changes, VPN logins, AV / IPS / app-control first-sightings and IOC hits merged on one stream, newest first."
 };
+/* notes for the tables the list above does not cover - every sub-tab gets a tooltip and a note line */
+(function(){ var add={
+  admin_src:TABLE_NOTES.admin_src,
+  event_summary:"One row per event type (subtype + log ID) with its count, level, first / last time and a sample message - the full inventory of what the system, VPN and user logs contain.",
+  user_auth:"Firewall user authentication (captive portal, LDAP, RADIUS, FSSO) per user: successes, failures, timeouts, logons / logouts, the sources they came from and why failures failed.",
+  user_auth_fail_src:"Authentication failures per source address. One source failing for 5+ different users is password spraying (or a shared machine with stale credentials).",
+  traffic_services:"Every destination port / protocol and service seen: sessions, accepted / denied / failed, bytes, distinct sources and destinations.",
+  traffic_actions:"How sessions ended, per traffic subtype and action (accept, close, deny, client-rst, server-rst, timeout, ip-conn = connection failed).",
+  utm_ips:"IPS detections per signature, source, destination and port, with blocked / allowed / unknown outcome counts.",
+  utm_app:TABLE_NOTES.utm_app,
+  utm_web_categories:"Web-filter events per category and action: how many sites and sources each category touched.",
+  utm_ssl:"SSL / deep-inspection events per event subtype, SNI / host and action - certificate problems, blocked protocols, inspection exemptions.",
+  utm_other:"Other security-profile events: DNS filter, anomaly / DoS, DLP, email filter - per type, event, subject and action.",
+  ioc_terms:"The raw-line IOC sweep, one row per term: hits, the log types they were in, the sources and destinations involved.",
+  ioc_hits:"Every raw log line that matched an IOC term, with the full line and the file it came from (Path).",
+  ioc_view:"Rows from every result table that contain an IOC term - available as soon as terms are applied, no reprocessing needed.",
+  coverage_days:"Lines per log type per UTC day - gaps and spikes show collection holes and busy days.",
+  devices:"Firewall names and serials the logs carry (devname= / devid=), the VDOMs and timezone seen, plus names learned from hostname-setting events."
+}; for(var k in add){ if(add.hasOwnProperty(k) && add[k] && !TABLE_NOTES[k]) TABLE_NOTES[k]=add[k]; } })();
+var VIEW_TIPS={
+  ov:"Overview: run summary, findings generated from every table, and log coverage",
+  adm:"Admin access: every admin login attempt to the firewall itself - by source, by username, and each successful session",
+  cfg:"Config & system: every configuration change (who, from where, old -> new), notable system events, and an inventory of every event type",
+  vpn:"VPN: SSL-VPN logins per user and source country, IPsec tunnels and peers, and the VPN event stream",
+  usr:"User auth: firewall user authentication (captive portal / LDAP / RADIUS / FSSO) and failures per source",
+  trf:"Traffic: Internet destinations, internal sources, inbound from the Internet, what is exposed, lateral admin-port traffic, ports and the largest uploads",
+  utm:"Security profiles: antivirus, IPS, application control, web filter, SSL inspection and other UTM - with blocked / allowed outcomes",
+  ioc:"IOC hits: the raw-line sweep for your IOC terms and every table row that contains them",
+  tl:"Timeline: admin sessions, config changes, VPN logins, UTM first sightings and IOC hits on one stream, newest first",
+  src:"Sources: every file read (and why any was skipped or failed), coverage per log type, lines per day, device names"
+};
+var COL_TIPS={
+  "Time_UTC":"When it happened (UTC)","First_UTC":"Earliest event in this row (UTC)","Last_UTC":"Latest event in this row (UTC)","Day_UTC":"UTC calendar day",
+  "SrcIP":"Source address","DstIP":"Destination address","RemoteIP":"The remote peer's address (VPN client / IPsec peer)","LocalIP":"The firewall's own address for this tunnel",
+  "Public":"yes = the source is a public (Internet) address, by address class","Failed":"Failed attempts","Succeeded":"Successful logins","Lockouts":"Times FortiOS locked this source out after repeated failures",
+  "Logouts":"Admin logouts / session timeouts","SSHNegFail":"SSH negotiations that failed (scanners offering old ciphers / key exchanges)","Users":"Distinct user names",
+  "TopUsers":"Most frequent user names, with counts","Methods":"How the admin connected (https, ssh, console...)","TargetIPs":"Firewall addresses the attempts were aimed at - a WAN address means admin access is reachable from the Internet",
+  "Reasons":"Failure reasons FortiOS logged","FailsIn24hBeforeOk":"The most failures that fell in the 24 h before one of the successful logins (same source / same account)",
+  "FailsIn24hBeforeUp":"The most failed SSL-VPN logins in the 24 h before a tunnel came up","Profile":"Admin access profile (super_admin = full rights)","Profiles":"Admin access profiles used",
+  "State":"Session state at logout - Config-Changed means the session changed configuration","Event":"login ok / logout","Method":"How the admin connected","DurationSec":"Session duration in seconds",
+  "Interface":"How the admin was connected when the change was made, e.g. GUI(10.0.0.5)","CfgPath":"What kind of object changed (system.admin, firewall.policy, vpn.ssl.settings...)",
+  "CfgObj":"Which object (its name or ID)","CfgAttr":"Attributes changed, old->new","Action":"FortiOS action for this event","Actions":"Distinct FortiOS actions seen in this row",
+  "Outcome":"blocked / allowed / unknown - mapped from the FortiOS action (see Help)","Blocked":"Events the profile blocked","Allowed":"Events the profile let through (monitored, passthrough, detected...)",
+  "UnknownOutcome":"Events with an action this app does not recognise - read the Actions column","Country":"FortiGuard geolocation of the external address (Reserved = private)","SrcCountry":"FortiGuard geolocation of the source",
+  "Countries":"Countries seen, with counts","Sessions":"Sessions (interim long-session updates are not counted again)","Accepted":"Sessions the firewall let through (accept / close / reset / timeout)",
+  "Denied":"Sessions blocked by policy","BytesOut":"Bytes sent towards the destination (per-interval deltas summed)","BytesIn":"Bytes received from the destination",
+  "BytesOutInternet":"Bytes this host sent to the Internet","BytesInInternet":"Bytes this host received from the Internet","BytesInternal":"Bytes to / from internal destinations",
+  "Sources":"Distinct source addresses","TopSources":"Most frequent sources, with counts","Destinations":"Distinct destination addresses","Targets":"Distinct internal hosts reached",
+  "TopTargets":"Most reached internal hosts, with counts","Ports":"Destination port / protocol pairs, with counts","Port":"Destination port / protocol","Services":"FortiOS service names, with counts",
+  "Apps":"Applications / Internet services identified","Policies":"Firewall policy IDs and names that matched","Terminations":"How accepted sessions ended (close, client-rst, server-rst, timeout...)",
+  "SentBytes":"Bytes sent in this single session","RcvdBytes":"Bytes received in this single session","TunnelUp":"Successful SSL-VPN logins (tunnel up)","LoginFail":"Failed SSL-VPN logins",
+  "TunnelDown":"Tunnel closures","TunnelIPs":"Addresses assigned to the VPN client","Phase1Err":"IKE phase-1 negotiation errors","Phase1OK":"Successful IKE phase-1 negotiations",
+  "Severity":"Severity of the IPS signature","Attack":"IPS signature name","Category":"Category FortiGuard assigned","Risk":"FortiGuard application risk rating","Count":"Events in this row",
+  "Hits":"Matching raw log lines","Term":"The IOC term","RawLine":"The full raw log line","File":"Source file (path relative to the input)","Path":"Full path of the source file",
+  "Status":"What happened to the file: read, PARTIAL, FAILED or skipped","Lines":"Lines read","LogTypes":"Log type/subtype counts in the file"
+};
+var FLAG_TIPS={
+  "INTERNET-ADMIN-LOGIN":"An admin login SUCCEEDED from a public address","FAIL-THEN-SUCCESS":"Repeated failures in the 24 h before a successful login - credential guessing that worked (or a shared NAT address; check the accounts)",
+  "FAILURES+SUCCESSES":"Both failures and successes, but not failures shortly before a success - context only","BRUTE-FORCE":"20+ failed logins","INTERNET":"Failed attempts from a public address",
+  "LOCKOUT":"FortiOS locked this source out after repeated failures","SSH-SCAN":"SSH negotiation failures - Internet scanners","VALID-ADMIN":"An account that logged in successfully",
+  "TARGETED":"100+ failed logins against this one account","CONFIG-CHANGED":"The session changed configuration","SUPER-ADMIN":"Full-rights admin profile",
+  "ACCOUNT-CHANGE":"An admin / API user / local user / access profile was added or changed - classic persistence","SECURITY-CONFIG":"Policy, VIP, interface, VPN, user-group, logging or routing change",
+  "FROM-INTERNET":"The change was made by an admin connected from a public address","LOGGING-OFF":"Logging disabled or deleted - defence evasion","POLICY-LOGGING-OFF":"Traffic logging switched off on a policy",
+  "LOG-TAMPER":"A user cleared or deleted logs","FIRMWARE":"Firmware / image event","UNUSUAL-COUNTRY":"SSL-VPN login from a country other than the one most logins come from",
+  "UNKNOWN-PEER":"IKE from a peer no tunnel is configured for - Internet scanning","PASSWORD-SPRAY":"One source failing for 5+ different users","MANY-FAILURES":"20+ authentication failures",
+  "BULK-UPLOAD":"1 GB+ sent to one destination / in one session - possible exfiltration","LARGE-UPLOAD":"100 MB+ sent","SASE-PROXY":"Egress through a forward proxy / SASE - not scored as an upload",
+  "HEAVY-UPLOADER":"An internal host that sent 1 GB+ to the Internet","FAN-OUT":"Many destinations from one source","SWEEP":"One source reaching 20+ internal hosts on one admin port - scanning / lateral movement",
+  "ALLOWED-IN":"An Internet source whose sessions the firewall accepted","SCANNER":"100+ denied sessions from one Internet source","ADMIN-SERVICE-EXPOSED":"RDP / SMB / SSH / WinRM / SQL / VNC accepting sessions from the Internet",
+  "WIDELY-REACHED":"A service reached from 20+ Internet sources","EXPOSED":"A service that accepted Internet sessions","MALWARE-ALLOWED":"Malware detected but let through (monitor / passthrough) - the file reached the host",
+  "MALWARE-BLOCKED":"Malware detected and blocked","OUTCOME-UNKNOWN":"An action this app does not recognise - read the Action column; never assumed blocked","NOT-BLOCKED":"An IPS signature with allowed events",
+  "BAD-CATEGORY-ALLOWED":"A malicious / phishing / C2 / proxy-avoidance site that was reached","BAD-CATEGORY-BLOCKED":"A malicious-category site that was blocked","BAD-CATEGORY":"A malicious-category site",
+  "READ-FAILED":"The file could not be read - its lines are missing from every table","PARTIAL-READ":"The file was only partly decoded - lines after the error are missing","NOT-FORTIGATE":"Not a FortiGate key=value log - skipped",
+  "CRITICAL-RISK":"FortiGuard rates this application critical risk","ANOMALY":"Anomaly / DoS / DLP event"
+};
+function flagTip(name){ if(FLAG_TIPS[name]) return FLAG_TIPS[name];
+  if(/^IOC/.test(name)) return "Contains an IOC term"+(name.indexOf(":")>0?(" ("+name.substring(name.indexOf(":")+1)+")"):"");
+  if(/^IPS-/.test(name)) return "IPS signature severity "+name.substring(4).toLowerCase();
+  if(/-OUTCOME-UNKNOWN$/.test(name)) return "Outcome unknown - an unrecognised action; read the Actions column";
+  if(/-ALLOWED$/.test(name)) return name.replace(/-ALLOWED$/,"").toLowerCase()+" application allowed through";
+  if(/^(REMOTE\.ACCESS|PROXY|P2P)$/.test(name)) return name.toLowerCase()+" application (blocked)";
+  if(/^PORT-/.test(name)) return "Traffic to port "+name.substring(5)+", a port favoured by attacker tooling";
+  return "See Help > Flags for this rule"; }
+function colTip(c){ return (COL_TIPS[c]||c.replace(/_UTC$/," (UTC)").replace(/([a-z])([A-Z])/g,"$1 $2"))+" - click to sort, drag the right edge to resize"; }
 function viewOf(id){ for(var i=0;i<VIEWS.length;i++) if(VIEWS[i].id===id) return VIEWS[i]; return VIEWS[0]; }
 function setViewTab(id){
   VIEW=id; var vw=viewOf(id);
@@ -1819,13 +1917,13 @@ function setViewTab(id){
 }
 function renderBars(){
   var h="";
-  for(var i=0;i<VIEWS.length;i++){ var vw=VIEWS[i], fl=0, tot=0;
-    if(vw.subs){ for(var j=0;j<vw.subs.length;j++){ var t=TABLES[vw.subs[j][0]]; if(t){ fl+=t.nflag; tot+=t.total; } } }
-    h+='<button class="btn'+(VIEW===vw.id?" on":"")+'" data-view="'+vw.id+'">'+esc(vw.label)+(vw.subs?('<span class="cnt">'+nf(tot)+'</span>'):"")+(fl?('<span class="fl">'+nf(fl)+'&#9873;</span>'):"")+'</button>'; }
+  for(var i=0;i<VIEWS.length;i++){ var vw=VIEWS[i], fl=0, tot=0, pv=0;
+    if(vw.subs){ for(var j=0;j<vw.subs.length;j++){ var t=TABLES[vw.subs[j][0]]; if(t){ fl+=t.nflag; tot+=t.total; if(PIVOTM && vw.subs[j][0]!=="ioc_view") pv+=(PIVOTCNT[vw.subs[j][0]]||0); } } }
+    h+='<button class="btn'+(VIEW===vw.id?" on":"")+'" data-view="'+vw.id+'" title="'+esc((VIEW_TIPS[vw.id]||vw.label)+(vw.subs?(" - "+nf(tot)+" rows"+(fl?(", "+nf(fl)+" flagged"):"")+(PIVOTM?(", "+nf(pv)+" match the pivot"):"")):""))+'">'+esc(vw.label)+(vw.subs?('<span class="cnt">'+nf(tot)+'</span>'):"")+(fl?('<span class="fl">'+nf(fl)+'&#9873;</span>'):"")+(PIVOTM&&vw.subs?('<span class="pv">&#9670;'+nf(pv)+'</span>'):"")+'</button>'; }
   $("viewBar").innerHTML=h;
   var vw2=viewOf(VIEW), s="";
   if(vw2.subs){ for(var k=0;k<vw2.subs.length;k++){ var nm=vw2.subs[k][0], tt=TABLES[nm];
-    s+='<button class="btn sm'+(SUB===nm?" on":"")+'" data-sub="'+nm+'">'+esc(vw2.subs[k][1])+'<span class="cnt">'+(tt?nf(tt.total):"0")+'</span>'+(tt&&tt.nflag?('<span class="fl">'+nf(tt.nflag)+'&#9873;</span>'):"")+'</button>'; } }
+    s+='<button class="btn sm'+(SUB===nm?" on":"")+'" data-sub="'+nm+'" title="'+esc((TABLE_NOTES[nm]||vw2.subs[k][1])+" ("+(tt?nf(tt.total):"0")+" rows"+(tt&&tt.nflag?(", "+nf(tt.nflag)+" flagged"):"")+(PIVOTM?(", "+nf(PIVOTCNT[nm]||0)+" match the pivot"):"")+")")+'">'+esc(vw2.subs[k][1])+'<span class="cnt">'+(tt?nf(tt.total):"0")+'</span>'+(tt&&tt.nflag?('<span class="fl">'+nf(tt.nflag)+'&#9873;</span>'):"")+(PIVOTM?('<span class="pv">&#9670;'+nf(PIVOTCNT[nm]||0)+'</span>'):"")+'</button>'; } }
   $("subBar").innerHTML=s; showEl("subBar", !!vw2.subs);
 }
 function renderAll(){
@@ -1835,6 +1933,7 @@ function renderAll(){
   showEl("ovPane",ov); showEl("tblCard",!ov); if(ov){ showEl("detailCard",false); renderOverview(); } else renderTable();
 }
 
+var SEVTIP=["INFO - context, no action needed","LOW - worth knowing","MEDIUM - worth a look","HIGH - check this","CRITICAL - check this first"];
 function stat(nv,l,cls,tip){ return '<div class="stat"'+(tip?(' title="'+esc(tip)+'"'):"")+'><span class="n'+(cls?(" "+cls):"")+'">'+nv+'</span><span class="l">'+esc(l)+'</span></div>'; }
 function renderOverview(){
   var d=DATA, cov=tbl("coverage"), gmin=0, gmax=0, i;
@@ -1853,10 +1952,13 @@ function renderOverview(){
   var h="";
   if(!FINDINGS.length) h='<div class="muted">No findings.</div>';
   var SL=["INFO","LOW","MEDIUM","HIGH","CRITICAL"];
+  if(PIVOTM){ var ph='<div class="find" style="border-bottom:2px solid #1e4266"><span class="sev s1" title="The pivot set in the table toolbar">PIVOT</span><span class="ft">'+esc(PIVOT)+' appears in: </span><div class="fd">', any=false;
+    for(var vi=0;vi<VIEWS.length;vi++){ var vs=VIEWS[vi].subs||[]; for(var sj=0;sj<vs.length;sj++){ var pc=PIVOTCNT[vs[sj][0]]||0; if(pc && vs[sj][0]!=="ioc_view"){ any=true; ph+='<span class="lnk" data-view="'+VIEWS[vi].id+'" data-sub="'+vs[sj][0]+'" title="Open this table with the pivot applied">'+esc(VIEWS[vi].label+" > "+vs[sj][1])+' ('+nf(pc)+')</span> &nbsp; '; } } }
+    h+=ph+(any?"":"no table rows")+'</div></div>'; }
   for(i=0;i<FINDINGS.length;i++){ var f=FINDINGS[i];
-    h+='<div class="find"><span class="sev s'+f.s+'">'+SL[f.s]+'</span><span class="ft'+(f.view?' lnk':'')+'" data-fi="'+i+'">'+esc(f.t)+'</span>'+(f.d?('<div class="fd">'+esc(f.d)+'</div>'):"")+'</div>'; }
+    h+='<div class="find"><span class="sev s'+f.s+'" title="'+esc(SEVTIP[f.s])+'">'+SL[f.s]+'</span><span class="ft'+(f.view?' lnk':'')+'" data-fi="'+i+'">'+esc(f.t)+'</span>'+(f.d?('<div class="fd">'+esc(f.d)+'</div>'):"")+'</div>'; }
   $("findings").innerHTML=h;
-  var c="<table><thead><tr><th>Log type</th><th>Lines</th><th>First (UTC)</th><th>Last (UTC)</th><th>Span</th><th style=\"width:320px\">Coverage of the overall window</th></tr></thead><tbody>";
+  var c="<table><thead><tr><th title=\"FortiOS log type / subtype\">Log type</th><th title=\"Lines of this type\">Lines</th><th title=\"Earliest line (UTC)\">First (UTC)</th><th title=\"Latest line (UTC)\">Last (UTC)</th><th title=\"Time between first and last line - amber when far shorter than the other logs\">Span</th><th style=\"width:320px\" title=\"Where this log type's span sits inside the span of all logs\">Coverage of the overall window</th></tr></thead><tbody>";
   var W=gmax-gmin||1;
   for(i=0;i<cov.rows.length;i++){ var r=cov.rows[i], fa=msOf(v(cov,r,"First_UTC")), fb=msOf(v(cov,r,"Last_UTC")), left=Math.round((fa-gmin)/W*300), wd=Math.max(2,Math.round((fb-fa)/W*300));
     var short=((fb-fa)<(W*0.5) && n(cov,r,"Lines")>=1000 && W>86400000);
@@ -1869,17 +1971,73 @@ function renderOverview(){
 var NUMCOL_RE=/^(Lines|Bytes|Skipped|Outside|Failed|Succeeded|Lockouts|Logouts|SSHNeg|Users|SrcIPs|Count|Tunnel(Up|Down)|LoginFail|BytesSent|BytesRcvd|Other|Phase1|SA|MaxStat|OtherErr|Success|Failure|TimedOut|Logon|Logout|Sessions|Accepted|Denied|Failed|BytesOut|BytesIn|Sources|PublicDsts|InternalDsts|BytesInternal|Targets|Destinations|SentBytes|RcvdBytes|DurationSec|Hits|Hostnames|BytesFrom|BytesTo|Failures)/;
 var BYTECOL_RE=/Bytes|MaxStat/;
 function isTimeCol(c){ return /_UTC$/.test(c); }
+
+/* ---------- forensic filters ----------
+   SEVF: all / flag (medium+) / high.  PIVOT: one indicator followed across every tab (IP, CIDR, user, host).
+   PUBONLY: a public address in the row's who-columns.  THRU: what got through (accepted / succeeded / allowed).
+   OFFHRS: event time outside 07:00-19:00 or at the weekend in the FIREWALL's timezone.  CTRY / MINBYTES: per table. */
+var SEVF="all", PIVOT="", PIVOTM=null, PIVOTCNT={}, PUBONLY=false, THRU=false, OFFHRS=false, CTRY="", MINBYTES=0, DEVTZMIN=null;
+var IP_RE=/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g;
+function ipInt(s){ var m=/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s); if(!m) return null; return ((+m[1])*16777216)+((+m[2])*65536)+((+m[3])*256)+(+m[4]); }
+function makePivot(s){
+  s=trimStr(s).toLowerCase(); if(!s) return null;
+  var cm=/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/(\d{1,2})$/.exec(s);
+  if(cm && +cm[2]<=32){ var bits=+cm[2], size=Math.pow(2,32-bits), base=Math.floor(ipInt(cm[1])/size)*size;
+    return {label:s, test:function(txt){ var ips=txt.match(IP_RE)||[]; for(var i=0;i<ips.length;i++){ var n=ipInt(ips[i]); if(n!=null && n>=base && n<base+size) return true; } return false; }}; }
+  var e=s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+  var pre=/^[a-z0-9]/.test(s)?"(^|[^a-z0-9])":"", post=/[a-z0-9]$/.test(s)?"($|[^a-z0-9])":"";
+  var re=new RegExp(pre+e+post);
+  return {label:s, test:function(txt){ return re.test(txt); }};
+}
+function rowLow(t,i){ if(!t.low) t.low=[]; var x=t.low[i]; if(x==null){ x=t.low[i]=t.rows[i].join(" | ").toLowerCase(); } return x; }
+function computePivotCounts(){ PIVOTCNT={}; if(!PIVOTM) return;
+  for(var nm in TABLES){ if(!TABLES.hasOwnProperty(nm)) continue; var t=TABLES[nm], c=0; for(var i=0;i<t.rows.length;i++) if(PIVOTM.test(rowLow(t,i))) c++; PIVOTCNT[nm]=c; } }
+var WHO_RE=/^(SrcIP|DstIP|RemoteIP|Src)$/;
+function whoCols(t){ var o=[]; for(var c=0;c<t.cols.length;c++) if(WHO_RE.test(t.cols[c])) o.push(c); return o; }
+/* "got through" per table: allowed outcome, accepted sessions, successful logins, tunnels up; null = not applicable */
+function thruOf(t,r){
+  if(t.ix["Allowed"]!=null || (t.ix["Actions"]!=null && /^utm_(web|app|ips)$/.test(t.name))) return outc3(t,r).a>0;
+  if(t.ix["Outcome"]!=null) return v(t,r,"Outcome")==="allowed";
+  if(t.name==="utm_av") return (OUTCOME_MAP[String(v(t,r,"Action")).toLowerCase()]||0)===2;
+  if(t.ix["Accepted"]!=null) return n(t,r,"Accepted")>0;
+  if(t.ix["Succeeded"]!=null) return n(t,r,"Succeeded")>0;
+  if(t.ix["TunnelUp"]!=null) return n(t,r,"TunnelUp")>0;
+  if(t.ix["Success"]!=null) return n(t,r,"Success")>0;
+  if(t.name==="admin_sessions") return v(t,r,"Event")==="login ok";
+  if(t.name==="vpn_events") return v(t,r,"Action")==="tunnel-up";
+  if(t.name==="traffic_exposed" || t.name==="traffic_big_sessions") return true;
+  return null;
+}
+function ctryCol(t){ return t.ix["Country"]!=null?t.ix["Country"]:(t.ix["SrcCountry"]!=null?t.ix["SrcCountry"]:null); }
+function byteCols(t){ var o=[]; for(var c=0;c<t.cols.length;c++) if(BYTECOL_RE.test(t.cols[c]) && t.rows.length && typeof t.rows[0][c]==="number") o.push(c); return o; }
+function devTzMin(){ if(DEVTZMIN!=null) return DEVTZMIN; DEVTZMIN=0; var d=TABLES.devices;
+  if(d){ for(var i=0;i<d.rows.length;i++){ var z=String(v(d,d.rows[i],"TZ")).replace(/^'/,"").split(",")[0]; var m=/^([+-])(\d{2})(\d{2})$/.exec(trimStr(z)); if(m){ DEVTZMIN=(m[1]==="-"?-1:1)*((+m[2])*60+(+m[3])); break; } } }
+  return DEVTZMIN; }
+function tzLabel(){ var m=devTzMin(), a=Math.abs(m); return "UTC"+(m<0?"-":"+")+(a/60<10?"0":"")+Math.floor(a/60)+":"+(a%60<10?"0":"")+(a%60); }
+function isOffHours(ts){ var ms=msOf(ts); if(!ms) return false; var d=new Date(ms+devTzMin()*60000), h=d.getUTCHours(), wd=d.getUTCDay(); return wd===0||wd===6||h<7||h>=19; }
+
+function setSev(x){ SEVF=x; $("fAll").className="btn sm"+(x==="all"?" on":""); $("fFlag").className="btn sm"+(x==="flag"?" on":""); $("fHigh").className="btn sm"+(x==="high"?" on":""); }
+function setPivot(val){ PIVOT=trimStr(val); PIVOTM=makePivot(PIVOT); computePivotCounts(); var tot=0; for(var k in PIVOTCNT) if(PIVOTCNT.hasOwnProperty(k) && !/^ioc_view$/.test(k)) tot+=PIVOTCNT[k];
+  $("pivotInfo").innerHTML=PIVOTM?(nf(tot)+" matching rows across the tabs"):""; if($("pivot").value!==val) $("pivot").value=val; renderAll(); }
 function viewRows(t){
   var out=[], fromMs=DFROM?msOf(String(DFROM).replace(/(\d{4})(\d{2})(\d{2})/,"$1-$2-$3")+" 00:00:00"):0,
       toMs=DTO?msOf(String(DTO).replace(/(\d{4})(\d{2})(\d{2})/,"$1-$2-$3")+" 23:59:59"):0;
   var ft=t.ix["First_UTC"], lt=t.ix["Last_UTC"], tt=t.ix["Time_UTC"];
+  var who=PUBONLY?whoCols(t):null, cc=CTRY?ctryCol(t):null, bc=MINBYTES?byteCols(t):null;
   for(var i=0;i<t.rows.length;i++){ var r=t.rows[i], fl=t.flags[i];
-    if(FLAGONLY && (!fl || fl.s<2)) continue;
+    if(SEVF==="flag" && (!fl || fl.s<2)) continue;
+    if(SEVF==="high" && (!fl || fl.s<3)) continue;
     if(fromMs||toMs){
       if(tt!=null){ var x=msOf(r[tt]); if(x && ((fromMs && x<fromMs) || (toMs && x>toMs))) continue; }
       else if(ft!=null && lt!=null){ var a=msOf(r[ft]), b=msOf(r[lt]); if(a && b && ((fromMs && b<fromMs) || (toMs && a>toMs))) continue; }
     }
-    if(QUERY){ var txt=r.join(" | ").toLowerCase(); if(fl) for(var k=0;k<fl.t.length;k++) txt+=" "+fl.t[k][1].toLowerCase(); if(txt.indexOf(QUERY)<0) continue; }
+    if(PIVOTM && !PIVOTM.test(rowLow(t,i))) continue;
+    if(who && who.length){ var pub=false; for(var w=0;w<who.length && !pub;w++) if(isPublicIp(r[who[w]])) pub=true; if(!pub) continue; }
+    if(THRU){ var th=thruOf(t,r); if(th===false) continue; }
+    if(OFFHRS && tt!=null && !isOffHours(r[tt])) continue;
+    if(cc!=null && String(r[cc])!==CTRY) continue;
+    if(bc && bc.length){ var big=false; for(var bx=0;bx<bc.length && !big;bx++) if((+r[bc[bx]]||0)>=MINBYTES) big=true; if(!big) continue; }
+    if(QUERY){ var txt=rowLow(t,i); if(fl) for(var k=0;k<fl.t.length;k++) txt+=" "+fl.t[k][1].toLowerCase(); if(txt.indexOf(QUERY)<0) continue; }
     out.push(i); }
   var so=SORTS[t.name];
   if(so && so.k!=null){ var k2=so.k, dir=so.dir;
@@ -1895,7 +2053,7 @@ function cellHtml(col, val){
   var hit=false; if(IOCS.length){ var lv=val.toLowerCase(); for(var i=0;i<IOCS.length;i++) if(lv.indexOf(IOCS[i])>=0){ hit=true; break; } }
   return '<td class="'+(isTimeCol(col)||/IP$|IPs$|^Port$|Path|Attr|RawLine|Message|URL/.test(col)?"mono":"")+(hit?" hl-ioc":"")+'" title="'+esc(clip(val,1200))+'">'+esc(clip(val,240))+'</td>';
 }
-function tagsHtml(fl){ if(!fl||!fl.t.length) return ""; var h=""; for(var i=0;i<fl.t.length;i++){ var tg=fl.t[i]; h+='<span class="tag '+(/^IOC/.test(tg[1])?"ioc":("t"+tg[0]))+'">'+esc(tg[1])+'</span>'; } return h; }
+function tagsHtml(fl){ if(!fl||!fl.t.length) return ""; var h=""; for(var i=0;i<fl.t.length;i++){ var tg=fl.t[i]; h+='<span class="tag '+(/^IOC/.test(tg[1])?"ioc":("t"+tg[0]))+'" title="'+esc(flagTip(tg[1]))+'">'+esc(tg[1])+'</span>'; } return h; }
 function curTable(){ return TABLES[SUB]; }
 function renderTable(){
   var t=curTable();
@@ -1905,12 +2063,13 @@ function renderTable(){
   var note=esc(TABLE_NOTES[SUB]||"");
   if(/^ioc_/.test(SUB)){ var sw=DATA.iocTerms||[], um=unsweptTerms();
     note+=(note?" ":"")+(sw.length?("Raw-line sweep in this run: "+esc(sw.join(", "))+"."):"This run was processed with no IOC list, so the raw-line sweep is empty.")+
-      (um.length?(' <span class="warn">Not swept yet: '+esc(um.join(", "))+'</span> - <span class="lnk" data-resweep="1">re-sweep the raw logs now</span>.'):"")+
+      (um.length?(' <span class="warn">Not swept yet: '+esc(um.join(", "))+'</span> - <span class="lnk" data-resweep="1" title="Re-process the input of the loaded run with the current IOC list so every raw line is swept">re-sweep the raw logs now</span>.'):"")+
       (IOCS.length?"":" Add terms with IOC / keywords&hellip; (matches in the tables appear at once; the raw-line sweep runs at processing)."); }
   $("tblNote").innerHTML=note;
+  syncFilters(t);
   var idx=viewRows(t), so=SORTS[t.name]||{};
-  var h="<thead><tr><th data-k=\"-2\">Flags"+(so.k===-2?(so.dir>0?" \u25B2":" \u25BC"):"")+"</th>";
-  for(var c=0;c<t.cols.length;c++){ h+='<th data-k="'+c+'">'+esc(t.cols[c].replace(/_UTC$/," (UTC)"))+(so.k===c?(so.dir>0?" \u25B2":" \u25BC"):"")+'</th>'; }
+  var h="<thead><tr><th data-k=\"-2\" title=\"Why this app flagged the row (hover a tag for its meaning) - click to sort by severity\">Flags"+(so.k===-2?(so.dir>0?" \u25B2":" \u25BC"):"")+"</th>";
+  for(var c=0;c<t.cols.length;c++){ h+='<th data-k="'+c+'" title="'+esc(colTip(t.cols[c]))+'">'+esc(t.cols[c].replace(/_UTC$/," (UTC)"))+(so.k===c?(so.dir>0?" \u25B2":" \u25BC"):"")+'</th>'; }
   h+="</tr></thead><tbody>";
   var lim=Math.min(idx.length, MAXROWS);
   for(var r=0;r<lim;r++){ var ri=idx[r], row=t.rows[ri], fl=t.flags[ri];
@@ -1927,6 +2086,19 @@ function renderTable(){
     SORTS[SUB]={k:k, dir:(cur.k===k)?-cur.dir:(num?-1:1)}; renderTable(); }; }
   setupColResize(); applyFreeze();
 }
+function syncFilters(t){
+  var who=whoCols(t).length>0, thru=(t.rows.length?thruOf(t,t.rows[0]):null)!==null, off=t.ix["Time_UTC"]!=null, cc=ctryCol(t), bc=byteCols(t).length>0;
+  showEl("ctryWrap",cc!=null); showEl("bytesWrap",bc);
+  $("fPub").className="btn sm"+(PUBONLY?" on":"")+(who?"":" hide"); $("fThru").className="btn sm"+(THRU?" on":"")+(thru?"":" hide"); $("fOff").className="btn sm"+(OFFHRS?" on":"")+(off?"":" hide");
+  if(off) $("fOff").innerHTML="Off-hours only <span class=\"cnt\">"+esc(tzLabel())+"</span>";
+  if(cc!=null && $("fCtry").getAttribute("data-t")!==t.name){   // rebuild the country list for this table
+    var m={}, list=[], i; for(i=0;i<t.rows.length;i++){ var cv=String(t.rows[i][cc]||""); if(cv) m["#"+cv]=(m["#"+cv]||0)+1; }
+    for(var k in m) if(m.hasOwnProperty(k)) list.push([k.substring(1),m[k]]); list.sort(function(a,b){ return b[1]-a[1]; });
+    var sel=$("fCtry"); sel.innerHTML=""; var o0=document.createElement("option"); o0.value=""; o0.text="all countries ("+list.length+")"; sel.add(o0);
+    var has=false; for(i=0;i<list.length;i++){ var o=document.createElement("option"); o.value=list[i][0]; o.text=list[i][0]+" ("+nf(list[i][1])+")"; sel.add(o); if(list[i][0]===CTRY) has=true; }
+    if(!has) CTRY=""; sel.value=CTRY; sel.setAttribute("data-t",t.name); }
+  if(cc==null) CTRY="";
+}
 function applyFreeze(){ var sc=$("tblScroll"); if(!sc) return; var ths=$("tbl").getElementsByTagName("th"), y=sc.scrollTop; for(var i=0;i<ths.length;i++) ths[i].style.top=y+"px"; }
 
 /* ---------- detail pane ---------- */
@@ -1941,7 +2113,8 @@ function renderDetail(ri){
   h+="</div>";
   var pivots=[], seen={};
   for(var c3=0;c3<t.cols.length;c3++){ if(/IP$/.test(t.cols[c3]) && row[c3] && !seen[row[c3]]){ seen[row[c3]]=1; pivots.push(row[c3]); } }
-  if(pivots.length){ h+='<div class="muted" style="font-size:12px;margin-top:6px">Search this value in the current table: '; for(var p=0;p<pivots.length;p++) h+='<span class="lnk mono" data-q="'+esc(pivots[p])+'">'+esc(pivots[p])+'</span> &nbsp; '; h+='</div>'; }
+  if(pivots.length){ h+='<div class="muted" style="font-size:12px;margin-top:6px">Search this value in the current table: '; for(var p=0;p<pivots.length;p++) h+='<span class="lnk mono" data-q="'+esc(pivots[p])+'" title="Put this value in the search box (this table only)">'+esc(pivots[p])+'</span> &nbsp; ';
+    h+=' &nbsp; | &nbsp; Pivot on it across every tab: '; for(var p2=0;p2<pivots.length;p2++) h+='<span class="lnk mono" data-pivot="'+esc(pivots[p2])+'" title="Pivot on this address across all tabs - each tab shows how many rows mention it">&#9670; '+esc(pivots[p2])+'</span> &nbsp; '; h+='</div>'; }
   $("detBody").innerHTML=h; showEl("detailCard",true);
 }
 function copyDetail(){ var t=curTable(); if(!t||DETROW<0) return; var row=t.rows[DETROW], out=[];
@@ -2046,13 +2219,20 @@ function init(){
   $("iocLoad").onclick=function(){ $("iocPick").click(); };
   $("iocPick").onchange=function(){ if(this.value){ try{ $("iocBox").value=readUtf8(this.value); applyIocs(); }catch(e){ setStatus("Could not read IOC file: "+e.message,"err"); } } };
   $("q").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer); qTimer=window.setTimeout(function(){ QUERY=trimStr($("q").value).toLowerCase(); renderTable(); },180); };
-  $("fAll").onclick=function(){ FLAGONLY=false; $("fAll").className="btn sm on"; $("fFlag").className="btn sm"; renderTable(); };
-  $("fFlag").onclick=function(){ FLAGONLY=true; $("fFlag").className="btn sm on"; $("fAll").className="btn sm"; renderTable(); };
+  $("fAll").onclick=function(){ setSev("all"); renderTable(); };
+  $("fFlag").onclick=function(){ setSev("flag"); renderTable(); };
+  $("fHigh").onclick=function(){ setSev("high"); renderTable(); };
+  $("fPub").onclick=function(){ PUBONLY=!PUBONLY; renderTable(); };
+  $("fThru").onclick=function(){ THRU=!THRU; renderTable(); };
+  $("fOff").onclick=function(){ OFFHRS=!OFFHRS; renderTable(); };
+  $("fCtry").onchange=function(){ CTRY=this.value; renderTable(); };
+  $("fBytes").onchange=function(){ MINBYTES=+this.value||0; renderTable(); };
+  $("pivot").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer); qTimer=window.setTimeout(function(){ setPivot($("pivot").value); },300); };
   $("dfrom").onchange=function(){ DFROM=dayNum(this.value); renderTable(); };
   $("dto").onchange=function(){ DTO=dayNum(this.value); renderTable(); };
   $("pFrom").onchange=function(){ var x=trimStr(this.value); if(/^\d{4}-\d{2}-\d{2}$/.test(x)){ $("dfrom").value=x; DFROM=dayNum(x); } };
   $("pTo").onchange=function(){ var x=trimStr(this.value); if(/^\d{4}-\d{2}-\d{2}$/.test(x)){ $("dto").value=x; DTO=dayNum(x); } };
-  $("clearBtn").onclick=function(){ $("q").value=""; $("dfrom").value=""; $("dto").value=""; QUERY=""; DFROM=0; DTO=0; FLAGONLY=false; $("fAll").className="btn sm on"; $("fFlag").className="btn sm"; renderTable(); };
+  $("clearBtn").onclick=function(){ $("q").value=""; $("dfrom").value=""; $("dto").value=""; QUERY=""; DFROM=0; DTO=0; setSev("all"); PUBONLY=false; THRU=false; OFFHRS=false; CTRY=""; MINBYTES=0; try{ $("fBytes").value="0"; }catch(e){} $("pivot").value=""; setPivot(""); };
   $("exportBtn").onclick=exportView;
   $("fullCsvBtn").onclick=openFullCsv;
   $("copyBtn").onclick=copyNotes;
@@ -2062,11 +2242,12 @@ function init(){
   document.onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement;
     if(t && /\bcgrip\b/.test((t.className||"")+"")) return;
     var g=t; while(g && g.getAttribute && g.getAttribute("data-view")==null && g.getAttribute("data-sub")==null && g.tagName!=="BODY") g=g.parentNode;
-    if(g && g.getAttribute){ var dv=g.getAttribute("data-view"); if(dv){ setViewTab(dv); return; } var ds=g.getAttribute("data-sub"); if(ds){ SUB=ds; showEl("detailCard",false); renderAll(); return; } }
+    if(g && g.getAttribute){ var dv=g.getAttribute("data-view"); if(dv){ var dsb=g.getAttribute("data-sub"); if(dsb) SUB=dsb; setViewTab(dv); return; } var ds=g.getAttribute("data-sub"); if(ds){ SUB=ds; showEl("detailCard",false); renderAll(); return; } }
     var fi=t&&t.getAttribute?t.getAttribute("data-fi"):null;
-    if(fi!=null && fi!==""){ var f=FINDINGS[parseInt(fi,10)]; if(f && f.view){ SUB=f.sub; FLAGONLY=false; $("fAll").className="btn sm on"; $("fFlag").className="btn sm";
+    if(fi!=null && fi!==""){ var f=FINDINGS[parseInt(fi,10)]; if(f && f.view){ SUB=f.sub; setSev("all");
       if(f.q){ $("q").value=f.q; QUERY=f.q.toLowerCase(); } setViewTab(f.view); } return; }
     if(t && t.getAttribute && t.getAttribute("data-resweep")){ resweep(); return; }
+    if(t && t.getAttribute && t.getAttribute("data-pivot")){ setPivot(t.getAttribute("data-pivot")); setStatus("Pivot set to "+t.getAttribute("data-pivot")+" - the tab buttons show where it appears","ok"); return; }
     if(t && t.getAttribute && t.getAttribute("data-usehost")){ $("hostName").value=t.getAttribute("data-usehost"); HOST_TOUCHED=true; HOST_LOCK=false; syncOutDir(); showEl("hostHint",false);
       setStatus("Hostname set to "+$("hostName").value+(DATA?" - re-process to write the run under this name.":""),"ok"); return; }
     var q=t&&t.getAttribute?t.getAttribute("data-q"):null;
@@ -2195,7 +2376,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
   <div class="mcard">
     <span class="x" onclick="closeHelp()" title="Close">&times;</span>
     <h2>FortiGate Log Analyzer <span class="muted" style="font-size:13px;font-weight:400" id="helpVer"></span></h2>
-    <div class="gh muted">GitHub: <span class="lnk" onclick="openUrl(GITHUB)">https://github.com/bpmorris22/FortiGate-Log-Analyzer</span></div>
+    <div class="gh muted">GitHub: <span class="lnk" onclick="openUrl(GITHUB)" title="Open the project page on GitHub in your browser">https://github.com/bpmorris22/FortiGate-Log-Analyzer</span></div>
     <p>A single-file GUI for <b>FortiGate / FortiOS log triage</b>. It reads the logs exactly as they come off the appliance - the <b>Log &amp; Report "Download"</b> files from the GUI, syslog captures, FortiAnalyzer raw exports (key=value lines; plain or <code>.gz</code>) - and turns a folder of mixed log types into the questions an incident responder asks of a firewall: who logged in to it, what changed, who came in over VPN, what was exposed, what left, and what the security profiles caught.</p>
     <h3>Quick start</h3>
     <ul>
@@ -2214,6 +2395,16 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Security profiles</b> - antivirus detections, IPS, application control (remote-access tools flagged), web filter by site and category, SSL inspection anomalies, other UTM.</li>
       <li><b>IOC hits</b> - two layers. <b>Raw-line sweep</b>: with an IOC list set before processing, every raw log line is swept (whole-token match) and each hit keeps the full line. <b>Matches in tables</b>: terms applied at any time - including after processing - immediately gather every result-table row that contains them. When you Apply terms the run was not swept for, the app offers to re-sweep the raw logs.</li>
       <li><b>Timeline</b> - admin sessions, config changes, VPN logins, AV / IPS / app-control first sightings and IOC hits on one stream. <b>Sources</b> - files read, coverage per log type, lines per day, device names.</li>
+    </ul>
+    <h3>Filters (table toolbar)</h3>
+    <ul>
+      <li><b>Search</b> - substring over every column and flag name, this table only. <b>All rows / Flagged / High only</b> - severity.</li>
+      <li><b>Pivot</b> - one indicator followed across every tab: an IP, a CIDR range (<code>198.51.100.0/24</code>), a user or a host / domain, whole-token. Every tab and sub-tab button shows how many rows match (&#9670;), Overview lists them, and the filter stays on as you move. Click an IP in the row detail to pivot on it.</li>
+      <li><b>Internet IPs only</b> - rows whose SrcIP / DstIP / RemoteIP / Src is a public address (by address class).</li>
+      <li><b>Allowed / succeeded only</b> - what got through: accepted sessions, successful logins, tunnels up, allowed security-profile events.</li>
+      <li><b>Off-hours only</b> - event rows outside 07:00-19:00 or at the weekend, in the firewall's own timezone (shown on the button).</li>
+      <li><b>Country</b> (tables with a Country column) and <b>volume</b> (tables with byte columns: &ge; 10 MB / 100 MB / 1 GB).</li>
+      <li>Filters appear only on tables they apply to; <b>clear all</b> resets every one. Export view and Copy for case notes take exactly the rows on screen.</li>
     </ul>
     <h3>Flags (rules live in the app, so they change without reprocessing)</h3>
     <ul>
@@ -2240,7 +2431,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Traffic direction</b> comes from the interface roles: wan = Internet, lan / dmz = internal. An 'undefined' role on a VPN session (IPsec tunnel, ssl.root) counts as internal; otherwise the address class decides, and Overview says how many sessions needed that fallback.</li>
       <li><b>Input completeness.</b> Every file under the input is listed on Sources &gt; Files with its status. Multi-member gzip files are followed member by member; unreadable, corrupt or partly-decoded files raise a CRITICAL finding.</li>
     </ul>
-    <p class="muted" style="font-size:11px">MIT &copy; 2026 Ben Morris - <span class="lnk" onclick="copyFindings()">copy the findings list to the clipboard</span></p>
+    <p class="muted" style="font-size:11px">MIT &copy; 2026 Ben Morris - <span class="lnk" onclick="copyFindings()" title="Copy every finding (severity, title, detail) to the clipboard for case notes">copy the findings list to the clipboard</span></p>
   </div>
 </div>
 </body>
