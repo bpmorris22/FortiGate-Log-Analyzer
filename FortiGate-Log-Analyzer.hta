@@ -221,9 +221,10 @@
 <script type="text/plain" id="ps1Payload">
 # FortiGate-Engine.ps1 - streaming aggregator for FortiGate key=value logs (FortiGate Log Analyzer).
 # Reads FortiOS logs as they come off the appliance (GUI "Download" .log, syslog capture, FortiAnalyzer raw
-# export; plain or .gz), one pass, and writes:
-#   <OutDir>\<Host>-FortiGate-<Stamp>.json   capped tables (6000 rows each) for the HTA viewer
-#   <OutDir>\<Stamp>_<table>.csv             every table in full
+# export; plain or .gz, multi-member gzip included), one pass, and writes:
+#   <OutDir>\<Host>-FortiGate-<Stamp>.json   every table as a bounded PREVIEW (<= 6000 rows) for the HTA viewer,
+#                                            with true totals, priority rows always kept, and full-data stats
+#   <OutDir>\<Stamp>_<table>.csv             every table in FULL (event lists stream straight to disk while parsing)
 # The parse/aggregate core is C# (Add-Type): a GB of logs is ~1.3M lines and per-line PowerShell is too slow.
 # Times: eventtime (s / ms / us / ns epoch, all UTC) wins; date+time+tz is the fallback.
 # NB this file is embedded verbatim in FortiGate-Log-Analyzer.hta - it must never contain a closing script tag.
@@ -234,7 +235,7 @@ param(
   [string]$From = "",                                 # yyyy-MM-dd (UTC, inclusive) - lines outside are skipped
   [string]$To = "",
   [string]$IocFile = "",
-  [string]$AppVersion = "0.1.0-dev",
+  [string]$AppVersion = "0.2.1-dev",
   [string]$Stamp = "",
   [string]$ProgressFile = ""
 )
@@ -246,6 +247,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Globalization;
 
 public class FgAgg {
@@ -255,6 +257,8 @@ public class FgAgg {
   public Dictionary<string,long>[] T = new Dictionary<string,long>[8];
   public bool[] Over = new bool[8];
   public string S0 = "", S1 = "", S2 = "", S3 = "", S4 = "";
+  /* failure-before-success timing: failure times (ms, counted per distinct ms) and success times, evaluated at the end */
+  public Dictionary<long,int> FailMin; public List<long> OkMs;
   public void Seen(long ms){ N++; Touch(ms); }
   public void Touch(long ms){ if(ms > 0){ if(ms < First) First = ms; if(ms > Last) Last = ms; } }
   public void Add(int slot, string v){ Add(slot, v, 1); }
@@ -267,6 +271,23 @@ public class FgAgg {
     else if(d.Count < CAP) d[v] = w;
     else Over[slot] = true;
   }
+  public void Fail(long ms){ if(ms <= 0) return; if(FailMin == null) FailMin = new Dictionary<long,int>(); int c; FailMin.TryGetValue(ms, out c); FailMin[ms] = c + 1; }
+  public void Ok(long ms){ if(ms <= 0) return; if(OkMs == null) OkMs = new List<long>(); OkMs.Add(ms); }
+  /* largest number of failures strictly BEFORE a success and within 24 h of it (same aggregate key); a failure in the
+     same millisecond as the success is not counted - order unknown */
+  public long FailsBeforeOk(){
+    if(FailMin == null || OkMs == null) return 0;
+    List<long> keys = new List<long>(FailMin.Keys); keys.Sort();
+    long[] pre = new long[keys.Count + 1]; for(int i = 0; i < keys.Count; i++) pre[i + 1] = pre[i] + FailMin[keys[i]];
+    long best = 0;
+    foreach(long ok in OkMs){
+      long hi = ok - 1, lo = ok - 86400000L;          // [ok-24h, ok)
+      int a = LowerBound(keys, lo), b = LowerBound(keys, hi + 1);
+      long n = pre[b] - pre[a]; if(n > best) best = n;
+    }
+    return best;
+  }
+  static int LowerBound(List<long> k, long v){ int lo = 0, hi = k.Count; while(lo < hi){ int m = (lo + hi) / 2; if(k[m] < v) lo = m + 1; else hi = m; } return lo; }
   public long Distinct(int slot){ return T[slot] == null ? 0 : T[slot].Count; }
   public string Top(int slot, int k){
     Dictionary<string,long> d = T[slot];
@@ -286,28 +307,111 @@ public class FgAgg {
   }
 }
 
+/* aggregate table: built in memory at the end, sorted, written to CSV in full; the JSON preview keeps every
+   priority row first (up to the cap), then fills with the rest in sort order */
 public class FgTable {
   public string Name; public string[] Cols; public List<object[]> Rows = new List<object[]>();
   public int SortCol = -1; public bool Desc = true; public int SortCol2 = -1;
-  public long Total { get { return Rows.Count; } }
+  public Predicate<object[]> Prio;
   public FgTable(string name, int sortCol, params string[] cols){ Name = name; Cols = cols; SortCol = sortCol; }
   public void Add(params object[] r){ Rows.Add(r); }
-  static int Cmp(object a, object b){
+  public int Ix(string col){ return Array.IndexOf(Cols, col); }
+  public static int Cmp(object a, object b){
     if(a is long && b is long) return ((long)a).CompareTo((long)b);
     string x = a == null ? "" : a.ToString(), y = b == null ? "" : b.ToString();
     return string.CompareOrdinal(x, y);
   }
-  public void Sort(){
-    if(SortCol < 0) return;
+  public Comparison<object[]> Order(){
     int sc = SortCol, sc2 = SortCol2; bool desc = Desc;
-    Rows.Sort(delegate(object[] a, object[] b){
-      int r = Cmp(a[sc], b[sc]); if(desc) r = -r;
-      if(r == 0 && sc2 >= 0) r = -Cmp(a[sc2], b[sc2]);
-      return r; });
+    return delegate(object[] a, object[] b){ if(sc < 0) return 0; int r = Cmp(a[sc], b[sc]); if(desc) r = -r; if(r == 0 && sc2 >= 0) r = -Cmp(a[sc2], b[sc2]); return r; };
   }
+  public void Sort(){ if(SortCol >= 0) Rows.Sort(Order()); }
 }
 
-public class FgEvent { public long Ms; public string Cat, Sev, Summary, Src, User, Detail; }
+/* event list: every row streams to its full CSV the moment it is seen (so nothing is ever dropped from the CSV);
+   memory holds only a bounded preview - priority rows (newest first) plus the newest of the rest */
+public class FgList {
+  public const int CAP = 6000;
+  public string Name, PathCsv; public string[] Cols; public long Total, PrioTotal;
+  public List<object[]> Prio = new List<object[]>(), Rest = new List<object[]>();
+  StreamWriter W;
+  public FgList(string name, string dir, string stamp, params string[] cols){ Name = name; Cols = cols; PathCsv = Path.Combine(dir, stamp + "_" + name + ".csv"); }
+  public void Add(bool prio, params object[] row){
+    Total++;
+    if(W == null){ W = new StreamWriter(PathCsv, false, new UTF8Encoding(true)); FgEngine.CsvRow(W, Cols); }
+    FgEngine.CsvRow(W, row);
+    if(prio){ PrioTotal++; Prio.Add(row); if(Prio.Count >= 2 * CAP) Trim(Prio, CAP); }
+    else { Rest.Add(row); if(Rest.Count >= 2 * CAP) Trim(Rest, CAP); }
+  }
+  static void Trim(List<object[]> l, int n){
+    l.Sort(delegate(object[] a, object[] b){ return -FgTable.Cmp(a[0], b[0]); });
+    if(l.Count > n) l.RemoveRange(n, l.Count - n);
+  }
+  public List<object[]> Preview(){
+    Trim(Prio, CAP); Trim(Rest, Math.Max(0, CAP - Prio.Count));
+    List<object[]> o = new List<object[]>(Prio); o.AddRange(Rest);
+    o.Sort(delegate(object[] a, object[] b){ return -FgTable.Cmp(a[0], b[0]); });
+    return o;
+  }
+  public void Close(){ if(W != null){ W.Close(); W = null; } }
+}
+
+/* gzip reader that follows concatenated members (.NET Framework's GZipStream stops after the first). Each member's
+   end is proven by its trailer (CRC32 + ISIZE of the bytes it produced); trailing bytes that are not a valid
+   member are reported in Warning rather than silently ignored. */
+public class FgMultiGz : Stream {
+  FileStream fs; GZipStream gz; long len, memberStart; uint crc = 0xFFFFFFFF; long outLen; public string Warning = ""; public int Members = 0;
+  static uint[] TAB;
+  public FgMultiGz(string path){
+    if(TAB == null){ TAB = new uint[256]; for(uint i = 0; i < 256; i++){ uint c = i; for(int k = 0; k < 8; k++) c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1; TAB[i] = c; } }
+    fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20); len = fs.Length; memberStart = 0; Start();
+  }
+  void Start(){ fs.Position = memberStart; gz = new GZipStream(fs, CompressionMode.Decompress, true); crc = 0xFFFFFFFF; outLen = 0; Members++; }
+  public override int Read(byte[] buf, int off, int cnt){
+    while(true){
+      int n = gz.Read(buf, off, cnt);
+      if(n > 0){ for(int i = off; i < off + n; i++) crc = TAB[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8); outLen += n; return n; }
+      if(!Next()) return 0;
+    }
+  }
+  bool TrailerAt(long end, uint c, uint isz){
+    if(end < 8 || end > len) return false;
+    byte[] b = new byte[8]; fs.Position = end - 8; int got = 0; while(got < 8){ int r = fs.Read(b, got, 8 - got); if(r <= 0) return false; got += r; }
+    return BitConverter.ToUInt32(b, 0) == c && BitConverter.ToUInt32(b, 4) == isz;
+  }
+  bool Next(){
+    uint c = crc ^ 0xFFFFFFFF, isz = (uint)(outLen & 0xFFFFFFFF);
+    gz.Dispose(); gz = null;
+    if(TrailerAt(len, c, isz)) return false;                               // this member ends the file: done
+    // find the next member: a gzip magic whose preceding 8 bytes are this member's trailer
+    long pos = memberStart + 18; byte[] buf = new byte[1 << 20];
+    while(pos < len - 10){
+      fs.Position = pos; int n = fs.Read(buf, 0, buf.Length); if(n < 3) break;
+      for(int i = 0; i + 2 < n; i++){
+        if(buf[i] == 0x1f && buf[i + 1] == 0x8b && buf[i + 2] == 0x08){
+          long q = pos + i;
+          if(TrailerAt(q, c, isz)){ memberStart = q; Start(); return true; }
+          fs.Position = pos + n;   // TrailerAt moved the stream; the buffer is still valid
+        }
+      }
+      pos += n - 2;
+    }
+    Warning = "gzip data after member " + Members + " could not be decoded - the file may be truncated or corrupt; lines after that point were not read";
+    return false;
+  }
+  public override bool CanRead { get { return true; } }
+  public override bool CanSeek { get { return false; } }
+  public override bool CanWrite { get { return false; } }
+  public override long Length { get { throw new NotSupportedException(); } }
+  public override long Position { get { throw new NotSupportedException(); } set { throw new NotSupportedException(); } }
+  public override void Flush(){}
+  public override long Seek(long o, SeekOrigin s){ throw new NotSupportedException(); }
+  public override void SetLength(long v){ throw new NotSupportedException(); }
+  public override void Write(byte[] b, int o, int c){ throw new NotSupportedException(); }
+  protected override void Dispose(bool disposing){ if(disposing){ if(gz != null) gz.Dispose(); if(fs != null) fs.Dispose(); } base.Dispose(disposing); }
+}
+
+public class FgFile { public string Path, Rel, Status = "", Note = ""; public bool Read; }
 
 public static class FgEngine {
   static Dictionary<string,string> D = new Dictionary<string,string>(64, StringComparer.Ordinal);
@@ -316,14 +420,14 @@ public static class FgEngine {
   /* ---------------- aggregates ---------------- */
   static Dictionary<string,FgAgg> FILES, COVER, COVERDAY, ADMSRC, ADMUSR, EVSUM, VPNSSL, VPNIPS, UAUTH, UAUTHSRC,
     TDST, TSRC, TIN, TEXP, TSVC, TLAT, IPSA, APPA, WEBA, WEBC, SSLA, UTMO, IOCT, DEVS, TRFACT;
-  static List<FgEvent> TL;
-  static List<object[]> ADMSESS, CFG, SYSNOT, VPNEV, AVL, IOCH, BIG;
+  static FgList TL, ADMSESS, CFG, SYSNOT, VPNEV, AVL, IOCH;
+  static List<object[]> BIG;
   static long BIGMIN = 0;
   static string[] IOCS = new string[0];
   static long FROMMS = 0, TOMS = 0;
-  static long LINES = 0, PARSED = 0, SKIPPED = 0, OUTWIN = 0, BYTES = 0;
-  static string CURFILE = "";
-  static int TLCAP = 60000, LISTCAP = 50000;
+  static long LINES = 0, PARSED = 0, SKIPPED = 0, OUTWIN = 0, ROLEFALLBACK = 0;
+  static long AVB = 0, AVA = 0, AVU = 0, WEBB = 0, WEBA_ = 0, WEBU = 0, APPB = 0, APPA_ = 0, APPU = 0, IPSHB = 0, IPSHA = 0, IPSHU = 0, CFGRISKY = 0;
+  static string CURFILE = "", CURKEY = "";
 
   static FgAgg Get(Dictionary<string,FgAgg> m, string k){ FgAgg a; if(!m.TryGetValue(k, out a)){ a = new FgAgg(); m[k] = a; } return a; }
   static string G(string k){ string v; if(D.TryGetValue(k, out v)){ if(v == "N/A" || v == "n/a") return ""; return v; } return ""; }
@@ -360,6 +464,17 @@ public static class FgEngine {
     int n = 0; foreach(char ch in s){ if(ch == '.') n++; else if(!(char.IsDigit(ch) || ch == ':' || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))) return ""; }
     return (n == 3 || s.IndexOf(':') >= 0) ? s : "";
   }
+
+  /* ---------------- outcomes: one place that maps FortiOS action values to blocked / allowed / unknown ---------------- */
+  static readonly Dictionary<string,int> OUTCOME = new Dictionary<string,int>(StringComparer.OrdinalIgnoreCase){
+    {"blocked",1},{"block",1},{"deny",1},{"denied",1},{"dropped",1},{"drop",1},{"drop_session",1},{"reset",1},{"reset_client",1},{"reset_server",1},
+    {"clear_session",1},{"attachment-removed",1},{"removed",1},{"quarantined",1},{"quarantine",1},{"replaced",1},
+    {"pass",2},{"passthrough",2},{"pass_session",2},{"monitored",2},{"monitor",2},{"allow",2},{"allowed",2},{"accept",2},{"detected",2},{"exempt",2},{"log",2},{"logged",2}
+  };
+  public static int Outcome(string act){ int o; return OUTCOME.TryGetValue(act ?? "", out o) ? o : 0; }   // 1 blocked, 2 allowed, 0 unknown
+  public static string OutcomeName(int o){ return o == 1 ? "blocked" : (o == 2 ? "allowed" : "unknown"); }
+  public static readonly Regex MALCAT = new Regex("malicious|phishing|spam|newly (observed|registered)|command and control|proxy avoidance|hacking|dynamic dns|spyware|botnet|crypto ?mining|unrated", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+  static bool RiskyApp(string cat){ return cat == "Remote.Access" || cat == "Proxy" || cat == "P2P"; }
 
   /* ---------------- key=value parser ---------------- */
   static readonly string[] STARTKEYS = { "date=", "logver=", "itime=", "eventtime=", "devname=", "logid=", "time=" };
@@ -416,8 +531,7 @@ public static class FgEngine {
 
   /* ---------------- dispatch ---------------- */
   static void AddTl(long ms, string cat, string sev, string summary, string src, string user, string detail){
-    if(TL.Count >= TLCAP) return;
-    FgEvent e = new FgEvent(); e.Ms = ms; e.Cat = cat; e.Sev = sev; e.Summary = summary; e.Src = src; e.User = user; e.Detail = detail; TL.Add(e);
+    TL.Add(sev == "high" || sev == "med", Ts(ms), cat, sev, summary, src, user, detail);
   }
   static string Clip(string s, int n){ if(s == null) return ""; return s.Length > n ? s.Substring(0, n) + "..." : s; }
 
@@ -426,8 +540,7 @@ public static class FgEngine {
     string cat = (type.Length > 0 ? type : "?") + "/" + (sub.Length > 0 ? sub : "?");
     FgAgg cv = Get(COVER, cat); cv.Seen(ms); cv.Add(0, CURFILE);
     if(ms > 0){ FgAgg cd = Get(COVERDAY, cat + "|" + DayKey(ms)); cd.Seen(ms); cd.S0 = cat; cd.C[0] = DayKey(ms); }
-    FgAgg fa = Get(FILES, CURFILE); fa.Add(0, cat); fa.C[1]++;
-    fa.Touch(ms);
+    FgAgg fa = Get(FILES, CURKEY); fa.Add(0, cat); fa.Touch(ms);
     string dn = G("devname"), did = G("devid");
     if(dn.Length > 0 || did.Length > 0){ FgAgg dv = Get(DEVS, dn + "|" + did); dv.Seen(ms); dv.S0 = dn; dv.S1 = did; dv.Add(0, G("vd")); dv.Add(1, G("tz")); }
     else { FgAgg dv = Get(DEVS, "|"); dv.Seen(ms); dv.Add(0, G("vd")); dv.Add(1, G("tz")); }
@@ -450,12 +563,12 @@ public static class FgEngine {
     if(a.N == 1){ a.S0 = sub; a.S1 = logid; a.S2 = G("logdesc"); a.S3 = G("level"); a.S4 = Clip(G("msg"), 300); }
   }
 
-  static readonly System.Text.RegularExpressions.Regex NOTABLE = new System.Text.RegularExpressions.Regex(
+  static readonly Regex NOTABLE = new Regex(
     "restart|reboot|shut ?down|upgrade|downgrade|firmware|image|restor|backup|password|ha |failover|fortiguard.*(fail|expir)|license|factory|cleared|disk.*format|admin.*(add|delet|creat)|(add|delet|creat).*admin|api|automation|script|debug|log.*(clear|disab|delet)",
-    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
-  static readonly System.Text.RegularExpressions.Regex ROUTINE = new System.Text.RegularExpressions.Regex(
+    RegexOptions.IgnoreCase | RegexOptions.Compiled);
+  static readonly Regex ROUTINE = new Regex(
     "^(Disk log file deleted|Disk log rolled|DHCP statistics|Scanunit reloaded|FortiGate update succeeded|Automatic firmware upgrade was checking|NTP server status|Routing information changed|Seeding from entropy)",
-    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+    RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
   static void SystemEv(long ms, string logid){
     string action = G("action"), status = G("status"), logdesc = G("logdesc");
@@ -467,16 +580,17 @@ public static class FgEngine {
       FgAgg s = Get(ADMSRC, src); s.Seen(ms); s.S0 = src; s.Add(2, G("dstip"));
       FgAgg u = user.Length > 0 ? Get(ADMUSR, user) : null; if(u != null){ u.Seen(ms); u.S0 = user; }
       bool lockout = logid == "0100032021" || G("reason") == "exceed_limit";
+      bool pub = IsPublic(src);
       if(action == "logout"){ s.C[3]++; if(u != null) u.C[3]++;
-        if(ADMSESS.Count < LISTCAP) ADMSESS.Add(new object[]{ Ts(ms), "logout", user, src, method, G("profile"), L("duration"), G("state"), G("reason"), G("msg") });
+        ADMSESS.Add(pub, Ts(ms), "logout", user, src, method, G("profile"), L("duration"), G("state"), G("reason"), G("msg"));
         AddTl(ms, "admin", "", "Admin logout " + user + " (" + method + ")", src, user, G("state") + " " + G("reason"));
         return; }
       if(lockout){ s.C[2]++; s.Add(3, G("reason")); return; }
-      if(status == "success"){ s.C[1]++; if(u != null){ u.C[1]++; u.Add(0, src); u.Add(1, method); u.Add(2, G("profile")); }
+      if(status == "success"){ s.C[1]++; s.Ok(ms); if(u != null){ u.C[1]++; u.Ok(ms); u.Add(0, src); u.Add(1, method); u.Add(2, G("profile")); }
         s.Add(0, user); s.Add(1, method);
-        if(ADMSESS.Count < LISTCAP) ADMSESS.Add(new object[]{ Ts(ms), "login ok", user, src, method, G("profile"), 0L, "", G("reason"), G("msg") });
-        AddTl(ms, "admin", IsPublic(src) ? "high" : "", "Admin login OK " + user + " via " + method + (G("profile").Length > 0 ? " [" + G("profile") + "]" : ""), src, user, G("msg"));
-      } else { s.C[0]++; s.Add(0, user); s.Add(1, method); s.Add(3, G("reason")); if(u != null){ u.C[0]++; u.Add(0, src); u.Add(1, method); } }
+        ADMSESS.Add(pub, Ts(ms), "login ok", user, src, method, G("profile"), 0L, "", G("reason"), G("msg"));
+        AddTl(ms, "admin", pub ? "high" : "", "Admin login OK " + user + " via " + method + (G("profile").Length > 0 ? " [" + G("profile") + "]" : ""), src, user, G("msg"));
+      } else { s.C[0]++; s.Fail(ms); s.Add(0, user); s.Add(1, method); s.Add(3, G("reason")); if(u != null){ u.C[0]++; u.Fail(ms); u.Add(0, src); u.Add(1, method); } }
       return;
     }
     if(logid == "0100032247" || logdesc.IndexOf("SSH protocol cannot be negotiated", StringComparison.OrdinalIgnoreCase) >= 0){
@@ -496,15 +610,16 @@ public static class FgEngine {
     bool lv = level == "emergency" || level == "alert" || level == "critical";
     bool usr = user.Length > 0 && user != "system" && user != "N/A";
     if(!(lv || usr || NOTABLE.IsMatch(logdesc) || NOTABLE.IsMatch(G("action")))) return;
-    if(SYSNOT.Count < LISTCAP) SYSNOT.Add(new object[]{ Ts(ms), sub, logid, logdesc, level, user, G("ui").Length > 0 ? G("ui") : G("srcip"), G("action"), G("msg") });
+    SYSNOT.Add(lv, Ts(ms), sub, logid, logdesc, level, user, G("ui").Length > 0 ? G("ui") : G("srcip"), G("action"), G("msg"));
     AddTl(ms, "system", lv ? "med" : "", logdesc + (user.Length > 0 ? " (" + user + ")" : ""), G("srcip"), user, G("msg"));
   }
-  static readonly System.Text.RegularExpressions.Regex RISKYCFG = new System.Text.RegularExpressions.Regex(
+  static readonly Regex RISKYCFG = new Regex(
     "^(system\\.(admin|api-user|accprofile|interface|automation|global|ha|central-management|sso-admin|dns)|user\\.(local|group|radius|ldap|saml)|vpn\\.ssl|vpn\\.ipsec|firewall\\.(vip|policy|local-in-policy|address|service)|log\\.|router\\.)",
-    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+    RegexOptions.IgnoreCase | RegexOptions.Compiled);
   static void ConfigEv(long ms){
     string user = G("user"), ui = G("ui"), path = G("cfgpath"), obj = G("cfgobj"), attr = G("cfgattr"), act = G("action");
-    if(CFG.Count < LISTCAP) CFG.Add(new object[]{ Ts(ms), user, ui, act, path, obj, attr, G("msg") });
+    bool risky = RISKYCFG.IsMatch(path) || IsPublic(IpFromUi(ui)); if(risky) CFGRISKY++;
+    CFG.Add(risky, Ts(ms), user, ui, act, path, obj, attr, G("msg"));
     string sev = path.StartsWith("system.admin") || path.StartsWith("system.api-user") || path.StartsWith("user.local") || path.StartsWith("system.accprofile") ? "high" : (RISKYCFG.IsMatch(path) ? "med" : "");
     AddTl(ms, "config", sev, act + " " + path + (obj.Length > 0 ? " " + obj : ""), IpFromUi(ui), user, Clip(attr, 400));
   }
@@ -516,11 +631,11 @@ public static class FgEngine {
       FgAgg a = Get(VPNSSL, user + "|" + remip); a.Seen(ms); a.S0 = user; a.S1 = remip; a.S2 = G("srccountry"); if(a.S2.Length == 0) a.S2 = G("remcountry");
       a.Add(0, G("tunnelip")); a.Add(1, G("reason")); a.Add(2, ttype); a.Add(3, G("group"));
       string sev = "";
-      if(action == "tunnel-up"){ a.C[0]++; sev = "med"; }
-      else if(action == "ssl-login-fail" || G("status") == "failure"){ a.C[1]++; }
+      if(action == "tunnel-up"){ a.C[0]++; a.Ok(ms); sev = "med"; }
+      else if(action == "ssl-login-fail" || G("status") == "failure"){ a.C[1]++; a.Fail(ms); }
       else if(action == "tunnel-down"){ a.C[2]++; a.C[3] += L("sentbyte"); a.C[4] += L("rcvdbyte"); }
       else a.C[5]++;
-      if(VPNEV.Count < LISTCAP) VPNEV.Add(new object[]{ Ts(ms), "ssl", action, user, remip, a.S2, G("tunnelip"), G("vpntunnel"), G("reason"), L("sentbyte"), L("rcvdbyte"), G("msg") });
+      VPNEV.Add(action == "tunnel-up", Ts(ms), "ssl", action, user, remip, a.S2, G("tunnelip"), G("vpntunnel"), G("reason"), L("sentbyte"), L("rcvdbyte"), G("msg"));
       if(action == "tunnel-up" || action == "tunnel-down") AddTl(ms, "vpn", sev, "SSL-VPN " + action + " " + user, remip, user, G("tunnelip") + " " + G("srccountry"));
       return;
     }
@@ -535,7 +650,7 @@ public static class FgEngine {
     else if(action == "tunnel-stats"){ long s = L("sentbyte"), r = L("rcvdbyte"); if(s > b.C[5]) b.C[5] = s; if(r > b.C[6]) b.C[6] = r; }
     else if(ld.Contains("error") || G("status").Contains("error")){ b.C[7]++; b.Add(0, G("reason").Length > 0 ? G("reason") : logdesc); }
     string xu = G("xauthuser"); if(xu.Length > 0) b.Add(1, xu);
-    if(VPNEV.Count < LISTCAP && !ld.Contains("statistics") && !ld.Contains("progress")) VPNEV.Add(new object[]{ Ts(ms), "ipsec", action, xu, remip, G("srccountry"), G("assignip"), tun, G("reason").Length > 0 ? G("reason") : G("status"), L("sentbyte"), L("rcvdbyte"), G("msg") });
+    if(!ld.Contains("statistics") && !ld.Contains("progress")) VPNEV.Add(false, Ts(ms), "ipsec", action, xu, remip, G("srccountry"), G("assignip"), tun, G("reason").Length > 0 ? G("reason") : G("status"), L("sentbyte"), L("rcvdbyte"), G("msg"));
   }
   static void UserEv(long ms, string logid){
     string user = G("user").Trim(), action = G("action"), status = G("status"), src = G("srcip");
@@ -552,6 +667,14 @@ public static class FgEngine {
   }
 
   static readonly Dictionary<string,bool> LATPORTS = new Dictionary<string,bool>{ {"445",true},{"139",true},{"135",true},{"3389",true},{"5985",true},{"5986",true},{"22",true},{"23",true},{"5900",true},{"1433",true},{"3306",true},{"389",true},{"636",true},{"88",true},{"47001",true} };
+  /* interface role -> Internet-facing? wan = yes, lan/dmz = no, an SSL-VPN interface (ssl.<vdom>) = no;
+     anything else ("undefined" - IPsec tunnels, loopbacks, some zones) is not evidence either way: null */
+  static int RoleNet(string role, string intf){
+    if(role == "wan") return 1;
+    if(role == "lan" || role == "dmz") return 0;
+    if(intf.StartsWith("ssl.", StringComparison.OrdinalIgnoreCase)) return 0;
+    return -1;
+  }
   static void Traffic(long ms, string sub, string logid){
     string act = G("action"), src = G("srcip"), dst = G("dstip"), dport = G("dstport"), proto = G("proto");
     bool interim = logid == "0000000020" || logid == "0000000021";
@@ -559,19 +682,20 @@ public static class FgEngine {
     bool denied = act == "deny" || act == "block" || act == "blocked" || act == "drop" || act == "dropped";
     bool failed = act == "ip-conn";
     if(!interim){ FgAgg ta = Get(TRFACT, sub + "|" + act); ta.Seen(ms); ta.S0 = sub; ta.S1 = act; }
-    bool pubS = IsPublic(src), pubD = IsPublic(dst);
-    // direction by interface role when the log carries it (an IPsec / SD-WAN overlay can use non-RFC1918 space);
-    // address class is the fallback for logs without roles
-    string srole = G("srcintfrole"), drole = G("dstintfrole");
-    bool fromNet = srole.Length > 0 ? srole == "wan" : pubS;
-    bool toNet = drole.Length > 0 ? drole == "wan" : pubD;
+    /* direction: a known interface role decides. An unknown role on a VPN session (vpntype present) is the tunnel
+       side - internal. Otherwise fall back to the address class and count the session as fallback-classified. */
+    bool vpn = G("vpntype").Length > 0;
+    int rs = RoleNet(G("srcintfrole"), G("srcintf")), rd = RoleNet(G("dstintfrole"), G("dstintf"));
+    bool fb = false;
+    bool fromNet = rs >= 0 ? rs == 1 : (vpn ? false : FallbackPub(src, ref fb));
+    bool toNet = rd >= 0 ? rd == 1 : (vpn ? false : FallbackPub(dst, ref fb));
+    if(fb && !interim) ROLEFALLBACK++;
     string service = G("service"), app = G("app"); if(app.Length == 0) app = G("dstinetsvc");
     string user = G("user"); if(user.Length == 0) user = G("unauthuser");
     string pol = G("policyid") + (G("policyname").Length > 0 ? " " + G("policyname") : "");
     string pp = dport + "/" + ProtoName(proto);
     long sess = interim ? 0 : 1;
 
-    // service / port summary
     FgAgg sv = Get(TSVC, pp + "|" + service); sv.N += sess; sv.Touch(ms); sv.S0 = pp; sv.S1 = service;
     if(!interim){ if(denied) sv.C[1]++; else if(failed) sv.C[2]++; else sv.C[0]++; }
     sv.C[3] += sb; sv.C[4] += rb; sv.Add(0, src); sv.Add(1, dst);
@@ -597,12 +721,15 @@ public static class FgEngine {
       FgAgg n = Get(TIN, src); n.N += sess; n.Touch(ms); n.S0 = src; if(n.S1.Length == 0) n.S1 = G("srccountry");
       if(!interim){ if(denied) n.C[1]++; else if(failed) n.C[2]++; else n.C[0]++; }
       n.C[3] += sb; n.C[4] += rb; n.Add(0, pp); n.Add(1, dst); n.Add(2, pol); n.Add(3, sub);
-      if(!denied && !failed && act != "server-rst"){
+      /* the firewall let it through: a session ending in client-rst / server-rst / timeout was still accepted (data
+         may have flowed before the reset), so it stays in the exposure inventory with its termination reason */
+      if(!denied && !failed){
         FgAgg e = Get(TEXP, dst + "|" + pp); e.N += sess; e.Touch(ms); e.S0 = dst; e.S1 = pp; e.S2 = service; e.S3 = sub; e.S4 = G("tranip");
-        e.C[3] += sb; e.C[4] += rb; e.Add(0, src); e.Add(1, pol); e.Add(2, G("srccountry"));
+        e.C[3] += sb; e.C[4] += rb; e.Add(0, src); e.Add(1, pol); e.Add(2, G("srccountry")); if(!interim) e.Add(3, act);
       }
     }
   }
+  static bool FallbackPub(string ip, ref bool fb){ fb = true; return IsPublic(ip); }
   static string ProtoName(string p){ if(p == "6") return "tcp"; if(p == "17") return "udp"; if(p == "1") return "icmp"; if(p == "58") return "icmp6"; return p.Length > 0 ? "p" + p : "?"; }
   static void Big(long ms, string src, string dst, string pp, string service, string app, long s, long r, long dur, string act, string pol, string user, string ctry){
     if(BIG.Count >= 500 && s <= BIGMIN) return;
@@ -615,32 +742,37 @@ public static class FgEngine {
 
   static void Utm(long ms, string type, string sub){
     string src = G("srcip"), dst = G("dstip"), act = G("action"), user = G("user"); if(user.Length == 0) user = G("unauthuser");
+    int oc = Outcome(act);
     if(sub == "virus"){
-      if(AVL.Count < LISTCAP) AVL.Add(new object[]{ Ts(ms), src, dst, G("service"), G("direction"), G("filename"), G("virus"), G("dtype"), act, G("url").Length > 0 ? G("url") : G("hostname"), user, G("dstcountry"), G("analyticscksum").Length > 0 ? G("analyticscksum") : G("filehash"), G("msg") });
-      AddTl(ms, "av", act == "blocked" ? "med" : "high", "AV " + G("eventtype") + ": " + G("virus") + " in " + G("filename") + " (" + act + ")", src, user, dst + " " + G("service"));
+      if(oc == 1) AVB++; else if(oc == 2) AVA++; else AVU++;
+      AVL.Add(oc != 1, Ts(ms), OutcomeName(oc), src, dst, G("service"), G("direction"), G("filename"), G("virus"), G("dtype"), act, G("url").Length > 0 ? G("url") : G("hostname"), user, G("dstcountry"), G("analyticscksum").Length > 0 ? G("analyticscksum") : G("filehash"), G("msg"));
+      AddTl(ms, "av", oc == 1 ? "med" : "high", "AV " + G("eventtype") + ": " + G("virus") + " in " + G("filename") + " (" + act + ")", src, user, dst + " " + G("service"));
       return;
     }
     if(sub == "ips"){
-      string atk = G("attack");
-      FgAgg a = Get(IPSA, atk + "|" + src + "|" + dst + "|" + G("dstport")); a.Seen(ms); a.S0 = atk; a.S1 = src; a.S2 = dst; a.S3 = G("dstport"); a.S4 = G("severity");
-      a.Add(0, act); a.Add(1, G("attackid")); a.Add(2, G("direction")); a.Add(3, G("srccountry")); a.Add(4, G("ref")); a.Add(5, user);
-      if(a.N == 1){ string sv = G("severity"); AddTl(ms, "ips", (sv == "critical" || sv == "high") ? "high" : "med", "IPS " + atk + " [" + sv + "] " + act, src, user, dst + ":" + G("dstport")); }
+      string atk = G("attack"), sv = G("severity");
+      FgAgg a = Get(IPSA, atk + "|" + src + "|" + dst + "|" + G("dstport")); a.Seen(ms); a.S0 = atk; a.S1 = src; a.S2 = dst; a.S3 = G("dstport"); a.S4 = sv;
+      a.C[oc]++; a.Add(0, act); a.Add(1, G("attackid")); a.Add(2, G("direction")); a.Add(3, G("srccountry")); a.Add(4, G("ref")); a.Add(5, user);
+      if(sv == "critical" || sv == "high"){ if(oc == 1) IPSHB++; else if(oc == 2) IPSHA++; else IPSHU++; }
+      if(a.N == 1 || (oc != 1 && a.C[2] + a.C[0] == 1)) AddTl(ms, "ips", (sv == "critical" || sv == "high") ? "high" : "med", "IPS " + atk + " [" + sv + "] " + act, src, user, dst + ":" + G("dstport"));
       return;
     }
     if(sub == "app-ctrl"){
-      string app = G("app");
-      FgAgg a = Get(APPA, app + "|" + src); a.Seen(ms); a.S0 = app; a.S1 = src; a.S2 = G("appcat"); a.S3 = G("apprisk");
-      a.Add(0, act); a.Add(1, dst); a.Add(2, user); a.Add(3, G("dstport")); a.Add(4, G("dstcountry"));
-      if(a.N == 1 && (G("appcat") == "Remote.Access" || G("appcat") == "Proxy" || G("appcat") == "P2P" || G("apprisk") == "critical"))
-        AddTl(ms, "app", act == "block" ? "" : "med", G("appcat") + ": " + app + " (" + act + ") first seen", src, user, dst);
+      string app = G("app"), cat = G("appcat");
+      FgAgg a = Get(APPA, app + "|" + src); a.Seen(ms); a.S0 = app; a.S1 = src; a.S2 = cat; a.S3 = G("apprisk");
+      a.C[oc]++; a.Add(0, act); a.Add(1, dst); a.Add(2, user); a.Add(3, G("dstport")); a.Add(4, G("dstcountry"));
+      if(RiskyApp(cat)){ if(oc == 1) APPB++; else if(oc == 2) APPA_++; else APPU++; }
+      if((a.N == 1 || (oc != 1 && a.C[2] + a.C[0] == 1)) && (RiskyApp(cat) || G("apprisk") == "critical"))
+        AddTl(ms, "app", oc == 1 ? "" : "med", cat + ": " + app + " (" + act + ")" + (a.N == 1 ? " first seen" : " first allowed"), src, user, dst);
       return;
     }
     if(sub == "webfilter"){
       string hn = G("hostname"); if(hn.Length == 0) hn = G("url");
       string cat = G("catdesc"); if(cat.Length == 0) cat = G("eventtype");
       FgAgg a = Get(WEBA, hn + "|" + src); a.Seen(ms); a.S0 = hn; a.S1 = src; a.S2 = cat; if(a.S3.Length == 0) a.S3 = Clip(G("url"), 300);
-      a.Add(0, act); a.Add(1, user); a.Add(2, G("dstcountry")); a.Add(3, G("profile")); a.C[0] += L("sentbyte");
+      a.C[oc]++; a.Add(0, act); a.Add(1, user); a.Add(2, G("dstcountry")); a.Add(3, G("profile")); a.C[4] += L("sentbyte");
       FgAgg c = Get(WEBC, cat + "|" + act); c.Seen(ms); c.S0 = cat; c.S1 = act; c.Add(0, hn); c.Add(1, src);
+      if(MALCAT.IsMatch(cat)){ if(oc == 1) WEBB++; else if(oc == 2) WEBA_++; else WEBU++; }
       return;
     }
     if(sub == "ssl"){
@@ -670,54 +802,73 @@ public static class FgEngine {
       }
       if(p < 0) continue;
       FgAgg a = Get(IOCT, term); a.Seen(ms); a.S0 = term; a.Add(0, cat); a.Add(1, G("srcip")); a.Add(2, G("dstip"));
-      if(IOCH.Count < 20000) IOCH.Add(new object[]{ Ts(ms), term, cat, G("srcip"), G("dstip"), G("dstport"), G("user"), G("action"), CURFILE, Clip(raw, 1500) });
+      IOCH.Add(true, Ts(ms), term, cat, G("srcip"), G("dstip"), G("dstport"), G("user"), G("action"), CURFILE, Clip(raw, 1500));
       if(a.N <= 50) AddTl(ms, "ioc", "high", "IOC hit '" + term + "' in " + cat, G("srcip"), G("user"), Clip(G("msg").Length > 0 ? G("msg") : (G("dstip") + ":" + G("dstport") + " " + G("action")), 300));
     }
   }
 
-  /* ---------------- file loop ---------------- */
-  public static List<string> Enumerate(string input){
-    List<string> outp = new List<string>();
+  /* ---------------- file discovery: every candidate gets a status, nothing disappears silently ---------------- */
+  public static List<FgFile> Enumerate(string input){
+    List<FgFile> outp = new List<FgFile>();
     foreach(string part in input.Split('|')){
       string p = part.Trim(); if(p.Length == 0) continue;
-      if(File.Exists(p)){ outp.Add(p); continue; }
+      if(File.Exists(p)){ FgFile f = new FgFile(); f.Path = Path.GetFullPath(p); f.Rel = Path.GetFileName(p); f.Read = true; outp.Add(f); continue; }
       if(Directory.Exists(p)){
-        foreach(string f in Directory.GetFiles(p, "*", SearchOption.AllDirectories)){
-          string fn = Path.GetFileName(f).ToLowerInvariant();
+        string root = Path.GetFullPath(p).TrimEnd('\\');
+        foreach(string fp in Directory.GetFiles(root, "*", SearchOption.AllDirectories)){
+          string fn = Path.GetFileName(fp).ToLowerInvariant();
           if(fn.EndsWith(".json") || fn.EndsWith(".csv") || fn.EndsWith(".hta") || fn.EndsWith(".html") || fn.EndsWith(".zip") || fn.EndsWith(".exe") || fn.EndsWith(".dll") || fn.EndsWith(".ps1")) continue;
-          if(f.IndexOf("\\_Processed\\", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-          if(Sniff(f)) outp.Add(f);
+          if(fp.IndexOf("\\_Processed\\", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+          FgFile f = new FgFile(); f.Path = fp; f.Rel = fp.Substring(root.Length).TrimStart('\\');
+          string err; int s = Sniff(fp, out err);
+          if(s == 1) f.Read = true;
+          else if(s == 0){ f.Status = "skipped - not FortiGate key=value"; }
+          else { f.Status = "FAILED - could not be read"; f.Note = err; }
+          outp.Add(f);
         }
-      } else Log("WARN input not found: " + p);
+      } else { FgFile f = new FgFile(); f.Path = p; f.Rel = p; f.Status = "FAILED - input not found"; outp.Add(f); Log("WARN input not found: " + p); }
     }
-    outp.Sort(StringComparer.OrdinalIgnoreCase);
+    outp.Sort(delegate(FgFile a, FgFile b){ return string.Compare(a.Rel, b.Rel, StringComparison.OrdinalIgnoreCase); });
     return outp;
   }
-  static TextReader Open(string f){
-    Stream st = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20);
-    if(f.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)) st = new GZipStream(st, CompressionMode.Decompress);
+  static TextReader Open(string f, out FgMultiGz gz){
+    gz = null;
+    Stream st;
+    if(f.EndsWith(".gz", StringComparison.OrdinalIgnoreCase)){ gz = new FgMultiGz(f); st = gz; }
+    else st = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20);
     return new StreamReader(st, Encoding.UTF8, true, 1 << 20);
   }
-  public static bool Sniff(string f){
+  /* 1 = FortiGate log, 0 = readable but something else, -1 = could not be read (corrupt gzip, access denied...) */
+  public static int Sniff(string f, out string err){
+    err = "";
     try{
-      using(TextReader r = Open(f)){
+      FgMultiGz gz;
+      using(TextReader r = Open(f, out gz)){
         char[] buf = new char[8192]; int n = r.Read(buf, 0, buf.Length); string s = new string(buf, 0, Math.Max(n, 0));
-        return s.IndexOf("logid=", StringComparison.Ordinal) >= 0 && s.IndexOf("type=", StringComparison.Ordinal) >= 0;
+        return (s.IndexOf("logid=", StringComparison.Ordinal) >= 0 && s.IndexOf("type=", StringComparison.Ordinal) >= 0) ? 1 : 0;
       }
-    } catch { return false; }
+    } catch(Exception ex){ err = ex.GetType().Name + ": " + ex.Message; return -1; }
   }
 
   public static string Run(string input, string outDir, string host, string stamp, string from, string to, string iocFile, string progress, string appVersion){
     DateTime t0 = DateTime.UtcNow;
-    FILES = new Dictionary<string,FgAgg>(); COVER = new Dictionary<string,FgAgg>(); COVERDAY = new Dictionary<string,FgAgg>();
+    FILES = new Dictionary<string,FgAgg>(StringComparer.OrdinalIgnoreCase); COVER = new Dictionary<string,FgAgg>(); COVERDAY = new Dictionary<string,FgAgg>();
     ADMSRC = new Dictionary<string,FgAgg>(); ADMUSR = new Dictionary<string,FgAgg>(StringComparer.OrdinalIgnoreCase); EVSUM = new Dictionary<string,FgAgg>();
     VPNSSL = new Dictionary<string,FgAgg>(); VPNIPS = new Dictionary<string,FgAgg>(); UAUTH = new Dictionary<string,FgAgg>(); UAUTHSRC = new Dictionary<string,FgAgg>();
     TDST = new Dictionary<string,FgAgg>(); TSRC = new Dictionary<string,FgAgg>(); TIN = new Dictionary<string,FgAgg>(); TEXP = new Dictionary<string,FgAgg>();
     TSVC = new Dictionary<string,FgAgg>(); TLAT = new Dictionary<string,FgAgg>(); IPSA = new Dictionary<string,FgAgg>(); APPA = new Dictionary<string,FgAgg>();
     WEBA = new Dictionary<string,FgAgg>(); WEBC = new Dictionary<string,FgAgg>(); SSLA = new Dictionary<string,FgAgg>(); UTMO = new Dictionary<string,FgAgg>();
     IOCT = new Dictionary<string,FgAgg>(); DEVS = new Dictionary<string,FgAgg>(); TRFACT = new Dictionary<string,FgAgg>();
-    TL = new List<FgEvent>(); ADMSESS = new List<object[]>(); CFG = new List<object[]>(); SYSNOT = new List<object[]>(); VPNEV = new List<object[]>();
-    AVL = new List<object[]>(); IOCH = new List<object[]>(); BIG = new List<object[]>();
+    BIG = new List<object[]>();
+    if(!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
+    TL = new FgList("timeline", outDir, stamp, "Time_UTC", "Category", "Severity", "Summary", "Src", "User", "Detail");
+    ADMSESS = new FgList("admin_sessions", outDir, stamp, "Time_UTC", "Event", "User", "SrcIP", "Method", "Profile", "DurationSec", "State", "Reason", "Message");
+    CFG = new FgList("config_changes", outDir, stamp, "Time_UTC", "User", "Interface", "Action", "CfgPath", "CfgObj", "CfgAttr", "Message");
+    SYSNOT = new FgList("system_notable", outDir, stamp, "Time_UTC", "Subtype", "LogID", "LogDesc", "Level", "User", "UI_Src", "Action", "Message");
+    VPNEV = new FgList("vpn_events", outDir, stamp, "Time_UTC", "Kind", "Action", "User", "RemoteIP", "Country", "TunnelIP", "Tunnel", "Reason", "BytesSent", "BytesRcvd", "Message");
+    AVL = new FgList("utm_av", outDir, stamp, "Time_UTC", "Outcome", "SrcIP", "DstIP", "Service", "Direction", "FileName", "Virus", "Engine", "Action", "URL", "User", "Country", "Checksum", "Message");
+    IOCH = new FgList("ioc_hits", outDir, stamp, "Time_UTC", "Term", "Category", "SrcIP", "DstIP", "DstPort", "User", "Action", "File", "RawLine");
+    FgList[] lists = { ADMSESS, CFG, SYSNOT, VPNEV, AVL, IOCH, TL };
     DateTime df;
     if(from.Length > 0 && DateTime.TryParseExact(from, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out df)) FROMMS = (long)(df - new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds;
     if(to.Length > 0 && DateTime.TryParseExact(to, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out df)) TOMS = (long)(df.AddDays(1) - new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds - 1;
@@ -728,86 +879,124 @@ public static class FgEngine {
     IOCS = terms.ToArray();
     Log("FortiGate engine " + appVersion + " - host " + host + " - IOC terms " + IOCS.Length + (FROMMS > 0 || TOMS > 0 ? (" - window " + from + " .. " + to) : ""));
 
-    List<string> files = Enumerate(input);
-    if(files.Count == 0) throw new Exception("No FortiGate key=value log files found under: " + input);
-    long totalBytes = 0; foreach(string f in files){ try{ totalBytes += new FileInfo(f).Length; }catch{} }
-    Log("Files: " + files.Count + " (" + (totalBytes / 1048576) + " MB)");
+    List<FgFile> cands = Enumerate(input);
+    List<FgFile> files = cands.FindAll(delegate(FgFile f){ return f.Read; });
+    int nFailed = 0, nPartial = 0, nSkipped = 0, nReadFail = 0;
+    foreach(FgFile f in cands){ if(!f.Read){ if(f.Status.StartsWith("FAILED")) nFailed++; else nSkipped++; } }
+    if(files.Count == 0){ foreach(FgList l in lists) l.Close(); throw new Exception("No readable FortiGate key=value log files found under: " + input + (nFailed > 0 ? (" (" + nFailed + " candidate file(s) could not be read)") : "")); }
+    long totalBytes = 0; foreach(FgFile f in files){ try{ totalBytes += new FileInfo(f.Path).Length; }catch{} }
+    Log("Files: " + files.Count + " (" + (totalBytes / 1048576) + " MB)" + (nFailed > 0 ? (" - " + nFailed + " UNREADABLE") : "") + (nSkipped > 0 ? (" - " + nSkipped + " not FortiGate") : ""));
     int fi = 0; DateTime lastProg = DateTime.MinValue; long doneBytes = 0;
-    foreach(string f in files){
-      fi++; CURFILE = Path.GetFileName(f);
-      FgAgg fa = Get(FILES, CURFILE); fa.S0 = f; long flen = 0; try{ flen = new FileInfo(f).Length; }catch{} fa.C[0] = flen;
+    foreach(FgFile f in files){
+      fi++; CURFILE = f.Rel; CURKEY = f.Path;
+      FgAgg fa = Get(FILES, CURKEY); fa.S0 = f.Path; fa.S1 = f.Rel; long flen = 0; try{ flen = new FileInfo(f.Path).Length; }catch{} fa.C[0] = flen;
       Log("[" + fi + "/" + files.Count + "] " + CURFILE + " (" + (flen / 1048576) + " MB)");
-      long fl = 0;
-      using(TextReader r = Open(f)){
-        string line;
-        while((line = r.ReadLine()) != null){
-          LINES++; fl++; BYTES += line.Length + 1;
-          if(line.Length < 10){ SKIPPED++; fa.C[2]++; continue; }
-          if(Parse(line) < 3 || !Has("logid")){ SKIPPED++; fa.C[2]++; continue; }
-          long ms = TimeMs();
-          if((FROMMS > 0 && ms > 0 && ms < FROMMS) || (TOMS > 0 && ms > TOMS)){ OUTWIN++; fa.C[3]++; continue; }
-          PARSED++;
-          OnLine(line, ms);
-          if((fl & 32767) == 0 && progress.Length > 0 && (DateTime.UtcNow - lastProg).TotalSeconds > 1){
-            lastProg = DateTime.UtcNow;
-            try{ File.WriteAllText(progress, "File " + fi + "/" + files.Count + " " + CURFILE + " - " + fl.ToString("N0") + " lines - " + (doneBytes / 1048576) + " MB of earlier files done"); }catch{}
+      long fl = 0; FgMultiGz gz = null;
+      try{
+        using(TextReader r = Open(f.Path, out gz)){
+          string line;
+          while((line = r.ReadLine()) != null){
+            LINES++; fl++;
+            if(line.Length < 10){ SKIPPED++; fa.C[2]++; continue; }
+            if(Parse(line) < 3 || !Has("logid")){ SKIPPED++; fa.C[2]++; continue; }
+            long ms = TimeMs();
+            if((FROMMS > 0 && ms > 0 && ms < FROMMS) || (TOMS > 0 && ms > TOMS)){ OUTWIN++; fa.C[3]++; continue; }
+            PARSED++;
+            OnLine(line, ms);
+            if((fl & 32767) == 0 && progress.Length > 0 && (DateTime.UtcNow - lastProg).TotalSeconds > 1){
+              lastProg = DateTime.UtcNow;
+              try{ File.WriteAllText(progress, "File " + fi + "/" + files.Count + " " + CURFILE + " - " + fl.ToString("N0") + " lines - " + (doneBytes / 1048576) + " MB of earlier files done"); }catch{}
+            }
           }
         }
+        if(gz != null && gz.Warning.Length > 0){ f.Status = "PARTIAL"; f.Note = gz.Warning; nPartial++; Log("WARN " + CURFILE + ": " + gz.Warning); }
+        else f.Status = "read" + (gz != null && gz.Members > 1 ? (" (" + gz.Members + " gzip members)") : "");
+      } catch(Exception ex){
+        f.Status = "FAILED after " + fl + " lines"; f.Note = ex.GetType().Name + ": " + ex.Message; nFailed++; nReadFail++; Log("WARN " + CURFILE + ": " + f.Note);
       }
       fa.N = fl; doneBytes += flen;
       if(progress.Length > 0){ try{ File.WriteAllText(progress, "File " + fi + "/" + files.Count + " done - " + LINES.ToString("N0") + " lines so far"); }catch{} }
     }
+    foreach(FgList l in lists) l.Close();
     Log("Parsed " + PARSED.ToString("N0") + " of " + LINES.ToString("N0") + " lines (" + SKIPPED + " skipped, " + OUTWIN + " outside window) in " + (DateTime.UtcNow - t0).TotalSeconds.ToString("0.0") + " s");
+    if(nFailed + nPartial > 0) Log("WARN input incomplete: " + nFailed + " file(s) failed, " + nPartial + " partially read - see the Sources tab");
     if(progress.Length > 0){ try{ File.WriteAllText(progress, "Writing output..."); }catch{} }
 
-    List<FgTable> tabs = BuildTables();
-    if(!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
+    List<FgTable> tabs = BuildTables(cands);
     List<string> produced = new List<string>();
     foreach(FgTable t in tabs){
       if(t.Rows.Count == 0) continue;
       string cp = Path.Combine(outDir, stamp + "_" + t.Name + ".csv");
       WriteCsv(cp, t); produced.Add(Path.GetFileName(cp));
     }
+    foreach(FgList l in lists){ if(l.Total > 0) produced.Add(Path.GetFileName(l.PathCsv)); else { try{ if(File.Exists(l.PathCsv)) File.Delete(l.PathCsv); }catch{} } }
     string jp = Path.Combine(outDir, San(host) + "-FortiGate-" + stamp + ".json");
     StringBuilder sb = new StringBuilder(1 << 22);
     sb.Append("{\"app\":\"FortiGate-Log-Analyzer\",\"appVersion\":").Append(J(appVersion)).Append(",\"host\":").Append(J(host));
-    sb.Append(",\"stamp\":").Append(J(stamp)).Append(",\"input\":").Append(J(input)).Append(",\"generatedUtc\":").Append(J(DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss")));
+    sb.Append(",\"stamp\":").Append(J(stamp)).Append(",\"input\":").Append(J(input)).Append(",\"outDir\":").Append(J(Path.GetFullPath(outDir))).Append(",\"generatedUtc\":").Append(J(DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss")));
     sb.Append(",\"elapsedSec\":").Append(((long)(DateTime.UtcNow - t0).TotalSeconds).ToString());
     sb.Append(",\"winFrom\":").Append(J(from)).Append(",\"winTo\":").Append(J(to));
     sb.Append(",\"lines\":").Append(LINES).Append(",\"parsed\":").Append(PARSED).Append(",\"skipped\":").Append(SKIPPED).Append(",\"outsideWindow\":").Append(OUTWIN);
+    sb.Append(",\"filesRead\":").Append(files.Count - nReadFail).Append(",\"filesFailed\":").Append(nFailed).Append(",\"filesPartial\":").Append(nPartial).Append(",\"filesSkipped\":").Append(nSkipped);
+    sb.Append(",\"previewCap\":").Append(FgList.CAP);
+    sb.Append(",\"stats\":{\"av\":{\"blocked\":").Append(AVB).Append(",\"allowed\":").Append(AVA).Append(",\"unknown\":").Append(AVU).Append("}");
+    sb.Append(",\"webBad\":{\"blocked\":").Append(WEBB).Append(",\"allowed\":").Append(WEBA_).Append(",\"unknown\":").Append(WEBU).Append("}");
+    sb.Append(",\"appRisky\":{\"blocked\":").Append(APPB).Append(",\"allowed\":").Append(APPA_).Append(",\"unknown\":").Append(APPU).Append("}");
+    sb.Append(",\"ipsHigh\":{\"blocked\":").Append(IPSHB).Append(",\"allowed\":").Append(IPSHA).Append(",\"unknown\":").Append(IPSHU).Append("}");
+    sb.Append(",\"configRisky\":").Append(CFGRISKY).Append(",\"roleFallbackSessions\":").Append(ROLEFALLBACK).Append("}");
     sb.Append(",\"iocTerms\":["); for(int i = 0; i < IOCS.Length; i++){ if(i > 0) sb.Append(","); sb.Append(J(IOCS[i])); } sb.Append("]");
     sb.Append(",\"csvFiles\":["); for(int i = 0; i < produced.Count; i++){ if(i > 0) sb.Append(","); sb.Append(J(produced[i])); } sb.Append("]");
     sb.Append(",\"tables\":{");
     bool first = true;
     foreach(FgTable t in tabs){
       if(!first) sb.Append(","); first = false;
-      sb.Append(J(t.Name)).Append(":{\"total\":").Append(t.Rows.Count).Append(",\"cols\":[");
-      for(int c = 0; c < t.Cols.Length; c++){ if(c > 0) sb.Append(","); sb.Append(J(t.Cols[c])); }
-      sb.Append("],\"rows\":[");
-      int cap = Math.Min(t.Rows.Count, 6000);
-      for(int r = 0; r < cap; r++){
-        if(r > 0) sb.Append(",");
-        object[] row = t.Rows[r]; sb.Append("[");
-        for(int c = 0; c < row.Length; c++){ if(c > 0) sb.Append(","); object v = row[c]; if(v is long) sb.Append(((long)v).ToString()); else sb.Append(J(v == null ? "" : v.ToString())); }
-        sb.Append("]");
-      }
-      sb.Append("]}");
+      List<object[]> pv = PreviewOf(t); long pt = 0; if(t.Prio != null) foreach(object[] r in t.Rows) if(t.Prio(r)) pt++;
+      JsonTable(sb, t.Name, t.Cols, pv, t.Rows.Count, pt);
     }
+    foreach(FgList l in lists){ sb.Append(","); JsonTable(sb, l.Name, l.Cols, l.Preview(), l.Total, l.PrioTotal); }
     sb.Append("}}");
     File.WriteAllText(jp, sb.ToString(), new UTF8Encoding(false));
     Log("Wrote " + jp + " (" + (new FileInfo(jp).Length / 1024) + " KB) + " + produced.Count + " CSVs");
     Log("ENGINE_OK " + jp);
     return jp;
   }
+  static List<object[]> PreviewOf(FgTable t){
+    int cap = FgList.CAP;
+    if(t.Rows.Count <= cap) return t.Rows;
+    List<object[]> o = new List<object[]>(), rest = new List<object[]>();
+    foreach(object[] r in t.Rows){ if(t.Prio != null && t.Prio(r) && o.Count < cap) o.Add(r); else rest.Add(r); }
+    for(int i = 0; i < rest.Count && o.Count < cap; i++) o.Add(rest[i]);
+    o.Sort(t.Order());
+    return o;
+  }
+  static void JsonTable(StringBuilder sb, string name, string[] cols, List<object[]> rows, long total, long prioTotal){
+    sb.Append(J(name)).Append(":{\"total\":").Append(total).Append(",\"prioTotal\":").Append(prioTotal).Append(",\"cols\":[");
+    for(int c = 0; c < cols.Length; c++){ if(c > 0) sb.Append(","); sb.Append(J(cols[c])); }
+    sb.Append("],\"rows\":[");
+    for(int r = 0; r < rows.Count; r++){
+      if(r > 0) sb.Append(",");
+      object[] row = rows[r]; sb.Append("[");
+      for(int c = 0; c < row.Length; c++){ if(c > 0) sb.Append(","); object v = row[c]; if(v is long) sb.Append(((long)v).ToString()); else sb.Append(J(v == null ? "" : v.ToString())); }
+      sb.Append("]");
+    }
+    sb.Append("]}");
+  }
   static string San(string s){ StringBuilder b = new StringBuilder(); foreach(char c in s){ b.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.' ? c : '-'); } return b.ToString(); }
+  static long Lg(object[] r, int i){ return (i >= 0 && r[i] is long) ? (long)r[i] : 0; }
+  static string St(object[] r, int i){ return (i >= 0 && r[i] != null) ? r[i].ToString() : ""; }
 
   /* ---------------- tables ---------------- */
-  static List<FgTable> BuildTables(){
+  static List<FgTable> BuildTables(List<FgFile> cands){
     List<FgTable> T = new List<FgTable>();
     FgTable t;
 
-    t = new FgTable("files", 0, "File", "Path", "Bytes", "Lines", "Skipped", "OutsideWindow", "First_UTC", "Last_UTC", "LogTypes");
-    foreach(FgAgg a in FILES.Values) t.Add(Path.GetFileName(a.S0), a.S0, a.C[0], a.N, a.C[2], a.C[3], Ts(a.First), Ts(a.Last), a.Top(0, 8));
+    t = new FgTable("files", 0, "File", "Status", "Bytes", "Lines", "Skipped", "OutsideWindow", "First_UTC", "Last_UTC", "LogTypes", "Note", "Path");
+    foreach(FgFile f in cands){
+      FgAgg a; FILES.TryGetValue(f.Path, out a);
+      long bytes = 0; try{ bytes = new FileInfo(f.Path).Length; }catch{}
+      if(a != null) t.Add(f.Rel, f.Status, bytes, a.N, a.C[2], a.C[3], Ts(a.First), Ts(a.Last), a.Top(0, 8), f.Note, f.Path);
+      else t.Add(f.Rel, f.Status, bytes, 0L, 0L, 0L, "", "", "", f.Note, f.Path);
+    }
     t.Desc = false; t.Sort(); T.Add(t);
 
     t = new FgTable("coverage", 2, "Category", "Lines", "First_UTC", "Last_UTC", "Files");
@@ -816,43 +1005,31 @@ public static class FgEngine {
 
     t = new FgTable("coverage_days", 0, "Category", "Day_UTC", "Lines", "First_UTC", "Last_UTC");
     foreach(FgAgg a in COVERDAY.Values) t.Add(a.S0, Ts(a.C[0] * 86400000L).Substring(0, 10), a.N, Ts(a.First), Ts(a.Last));
-    t.Desc = false; t.SortCol2 = -1; t.Sort(); T.Add(t);
+    t.Desc = false; t.Sort(); T.Add(t);
 
     t = new FgTable("devices", 0, "DevName", "DevID", "Lines", "VDOMs", "TZ", "First_UTC", "Last_UTC");
     foreach(FgAgg a in DEVS.Values) t.Add(a.S0, a.S1, a.N, a.List(0), a.List(1), Ts(a.First), Ts(a.Last));
     t.SortCol = 2; t.Sort(); T.Add(t);
 
-    t = new FgTable("admin_src", 2, "SrcIP", "Public", "Failed", "Succeeded", "Lockouts", "Logouts", "SSHNegFail", "Users", "TopUsers", "Methods", "TargetIPs", "Reasons", "First_UTC", "Last_UTC");
-    foreach(FgAgg a in ADMSRC.Values) t.Add(a.S0, IsPublic(a.S0) ? "yes" : "no", a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.Distinct(0), a.Top(0, 6), a.List(1), a.List(2), a.Top(3, 4), Ts(a.First), Ts(a.Last));
-    t.SortCol2 = 3; t.Sort(); T.Add(t);
+    t = new FgTable("admin_src", 2, "SrcIP", "Public", "Failed", "Succeeded", "FailsIn24hBeforeOk", "Lockouts", "Logouts", "SSHNegFail", "Users", "TopUsers", "Methods", "TargetIPs", "Reasons", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in ADMSRC.Values) t.Add(a.S0, IsPublic(a.S0) ? "yes" : "no", a.C[0], a.C[1], a.FailsBeforeOk(), a.C[2], a.C[3], a.C[4], a.Distinct(0), a.Top(0, 6), a.List(1), a.List(2), a.Top(3, 4), Ts(a.First), Ts(a.Last));
+    t.SortCol2 = 3; t.Sort(); { int ok = t.Ix("Succeeded"); t.Prio = delegate(object[] r){ return Lg(r, ok) > 0; }; } T.Add(t);
 
-    t = new FgTable("admin_user", 1, "User", "Failed", "Succeeded", "Logouts", "SrcIPs", "TopSrcIPs", "Methods", "Profiles", "First_UTC", "Last_UTC");
-    foreach(FgAgg a in ADMUSR.Values) t.Add(a.S0, a.C[0], a.C[1], a.C[3], a.Distinct(0), a.Top(0, 6), a.List(1), a.List(2), Ts(a.First), Ts(a.Last));
-    t.SortCol2 = 2; t.Sort(); T.Add(t);
-
-    t = new FgTable("admin_sessions", 0, "Time_UTC", "Event", "User", "SrcIP", "Method", "Profile", "DurationSec", "State", "Reason", "Message");
-    foreach(object[] r in ADMSESS) t.Rows.Add(r); t.Sort(); T.Add(t);
-
-    t = new FgTable("config_changes", 0, "Time_UTC", "User", "Interface", "Action", "CfgPath", "CfgObj", "CfgAttr", "Message");
-    foreach(object[] r in CFG) t.Rows.Add(r); t.Sort(); T.Add(t);
-
-    t = new FgTable("system_notable", 0, "Time_UTC", "Subtype", "LogID", "LogDesc", "Level", "User", "UI_Src", "Action", "Message");
-    foreach(object[] r in SYSNOT) t.Rows.Add(r); t.Sort(); T.Add(t);
+    t = new FgTable("admin_user", 1, "User", "Failed", "Succeeded", "FailsIn24hBeforeOk", "Logouts", "SrcIPs", "TopSrcIPs", "Methods", "Profiles", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in ADMUSR.Values) t.Add(a.S0, a.C[0], a.C[1], a.FailsBeforeOk(), a.C[3], a.Distinct(0), a.Top(0, 6), a.List(1), a.List(2), Ts(a.First), Ts(a.Last));
+    t.SortCol2 = 2; t.Sort(); { int ok = t.Ix("Succeeded"); t.Prio = delegate(object[] r){ return Lg(r, ok) > 0; }; } T.Add(t);
 
     t = new FgTable("event_summary", 3, "Subtype", "LogID", "LogDesc", "Count", "Level", "First_UTC", "Last_UTC", "SampleMessage");
     foreach(FgAgg a in EVSUM.Values) t.Add(a.S0, a.S1, a.S2, a.N, a.S3, Ts(a.First), Ts(a.Last), a.S4);
     t.Sort(); T.Add(t);
 
-    t = new FgTable("vpn_ssl", 3, "User", "RemoteIP", "Country", "TunnelUp", "LoginFail", "TunnelDown", "BytesSent", "BytesRcvd", "Other", "TunnelIPs", "Reasons", "TunnelTypes", "Groups", "First_UTC", "Last_UTC");
-    foreach(FgAgg a in VPNSSL.Values) t.Add(a.S0, a.S1, a.S2, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.C[5], a.List(0), a.Top(1, 4), a.List(2), a.List(3), Ts(a.First), Ts(a.Last));
-    t.SortCol2 = 4; t.Sort(); T.Add(t);
+    t = new FgTable("vpn_ssl", 3, "User", "RemoteIP", "Country", "TunnelUp", "LoginFail", "FailsIn24hBeforeUp", "TunnelDown", "BytesSent", "BytesRcvd", "Other", "TunnelIPs", "Reasons", "TunnelTypes", "Groups", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in VPNSSL.Values) t.Add(a.S0, a.S1, a.S2, a.C[0], a.C[1], a.FailsBeforeOk(), a.C[2], a.C[3], a.C[4], a.C[5], a.List(0), a.Top(1, 4), a.List(2), a.List(3), Ts(a.First), Ts(a.Last));
+    t.SortCol2 = 4; t.Sort(); { int up = t.Ix("TunnelUp"); t.Prio = delegate(object[] r){ return Lg(r, up) > 0; }; } T.Add(t);
 
     t = new FgTable("vpn_ipsec", 4, "Tunnel", "RemoteIP", "Country", "LocalIP", "Phase1Err", "Phase1OK", "SAInstalled", "TunnelUp", "TunnelDown", "MaxStatSent", "MaxStatRcvd", "OtherErr", "Reasons", "XauthUsers", "Lines", "First_UTC", "Last_UTC");
     foreach(FgAgg a in VPNIPS.Values) t.Add(a.S0, a.S1, a.S2, a.S3, a.C[1], a.C[0], a.C[2], a.C[3], a.C[4], a.C[5], a.C[6], a.C[7], a.Top(0, 4), a.List(1), a.N, Ts(a.First), Ts(a.Last));
-    t.SortCol2 = 14; t.Sort(); T.Add(t);
-
-    t = new FgTable("vpn_events", 0, "Time_UTC", "Kind", "Action", "User", "RemoteIP", "Country", "TunnelIP", "Tunnel", "Reason", "BytesSent", "BytesRcvd", "Message");
-    foreach(object[] r in VPNEV) t.Rows.Add(r); t.Sort(); T.Add(t);
+    t.SortCol2 = 14; t.Sort(); { int tn = t.Ix("Tunnel"); t.Prio = delegate(object[] r){ return St(r, tn) != "(no tunnel matched)"; }; } T.Add(t);
 
     t = new FgTable("user_auth", 2, "User", "Success", "Failure", "TimedOut", "Logon", "Logout", "Other", "SrcIPs", "TopSrcIPs", "AuthServer", "Groups", "FailReasons", "AuthProto", "First_UTC", "Last_UTC");
     foreach(FgAgg a in UAUTH.Values) t.Add(a.S0, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.C[5], a.Distinct(0), a.Top(0, 5), a.List(1), a.List(2), a.Top(3, 3), a.Top(4, 3), Ts(a.First), Ts(a.Last));
@@ -868,7 +1045,7 @@ public static class FgEngine {
 
     t = new FgTable("traffic_public_dst", 6, "DstIP", "Country", "Sessions", "Accepted", "Denied", "Failed", "BytesOut", "BytesIn", "Sources", "TopSources", "Ports", "Services", "Apps", "Users", "Policies", "Hostnames", "First_UTC", "Last_UTC");
     foreach(FgAgg a in TDST.Values) t.Add(a.S0, a.S1, a.N, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.Distinct(0), a.Top(0, 4), a.Top(1, 6), a.Top(2, 4), a.Top(3, 4), a.Top(4, 4), a.Top(5, 3), a.Top(6, 3), Ts(a.First), Ts(a.Last));
-    t.SortCol2 = 2; t.Sort(); T.Add(t);
+    t.SortCol2 = 2; t.Sort(); T.Add(t);   // sorted by bytes out - the significant rows lead anyway
 
     t = new FgTable("traffic_internal_src", 6, "SrcIP", "Sessions", "Accepted", "Denied", "Failed", "BytesOutInternet", "BytesInInternet", "BytesInternal", "PublicDsts", "InternalDsts", "TopPorts", "Users", "Names", "MACs", "Device", "Interface", "First_UTC", "Last_UTC");
     foreach(FgAgg a in TSRC.Values) t.Add(a.S0, a.N, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.C[5] + a.C[6], a.Distinct(0), a.Distinct(1), a.Top(2, 6), a.Top(3, 4), a.List(4), a.List(5), a.Top(6, 2), a.List(7), Ts(a.First), Ts(a.Last));
@@ -876,10 +1053,10 @@ public static class FgEngine {
 
     t = new FgTable("traffic_inbound_src", 2, "SrcIP", "Country", "Sessions", "Accepted", "Denied", "Failed", "BytesIn", "BytesOut", "Ports", "Targets", "Policies", "Subtypes", "First_UTC", "Last_UTC");
     foreach(FgAgg a in TIN.Values) t.Add(a.S0, a.S1, a.N, a.C[0], a.C[1], a.C[2], a.C[3], a.C[4], a.Top(0, 6), a.Top(1, 4), a.Top(2, 3), a.List(3), Ts(a.First), Ts(a.Last));
-    t.SortCol2 = 3; t.Sort(); T.Add(t);
+    t.SortCol2 = 3; t.Sort(); { int acc = t.Ix("Accepted"); t.Prio = delegate(object[] r){ return Lg(r, acc) > 0; }; } T.Add(t);
 
-    t = new FgTable("traffic_exposed", 3, "DstIP", "Port", "Service", "Sessions", "Sources", "TopSources", "Countries", "BytesFromInternet", "BytesToInternet", "Policies", "Subtype", "NATtoIP", "First_UTC", "Last_UTC");
-    foreach(FgAgg a in TEXP.Values) t.Add(a.S0, a.S1, a.S2, a.N, a.Distinct(0), a.Top(0, 5), a.Top(2, 5), a.C[3], a.C[4], a.Top(1, 3), a.S3, a.S4, Ts(a.First), Ts(a.Last));
+    t = new FgTable("traffic_exposed", 3, "DstIP", "Port", "Service", "Sessions", "Sources", "TopSources", "Countries", "BytesFromInternet", "BytesToInternet", "Terminations", "Policies", "Subtype", "NATtoIP", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in TEXP.Values) t.Add(a.S0, a.S1, a.S2, a.N, a.Distinct(0), a.Top(0, 5), a.Top(2, 5), a.C[3], a.C[4], a.Top(3, 4), a.Top(1, 3), a.S3, a.S4, Ts(a.First), Ts(a.Last));
     t.Sort(); T.Add(t);
 
     t = new FgTable("traffic_lateral", 1, "SrcIP", "Sessions", "Port", "Service", "Accepted", "Denied", "Failed", "Targets", "TopTargets", "Bytes", "Users", "First_UTC", "Last_UTC");
@@ -894,20 +1071,17 @@ public static class FgEngine {
     t = new FgTable("traffic_big_sessions", 6, "Time_UTC", "SrcIP", "DstIP", "Port", "Service", "App", "SentBytes", "RcvdBytes", "DurationSec", "Action", "Policy", "User", "Country");
     foreach(object[] r in BIG) t.Rows.Add(r); T.Add(t);
 
-    t = new FgTable("utm_av", 0, "Time_UTC", "SrcIP", "DstIP", "Service", "Direction", "FileName", "Virus", "Engine", "Action", "URL", "User", "Country", "Checksum", "Message");
-    foreach(object[] r in AVL) t.Rows.Add(r); t.Sort(); T.Add(t);
+    t = new FgTable("utm_ips", 5, "Attack", "Severity", "SrcIP", "DstIP", "DstPort", "Count", "Blocked", "Allowed", "UnknownOutcome", "Actions", "AttackID", "Direction", "SrcCountry", "Users", "Ref", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in IPSA.Values) t.Add(a.S0, a.S4, a.S1, a.S2, a.S3, a.N, a.C[1], a.C[2], a.C[0], a.List(0), a.List(1), a.List(2), a.List(3), a.List(5), a.List(4), Ts(a.First), Ts(a.Last));
+    t.Sort(); { int al = t.Ix("Allowed"), un = t.Ix("UnknownOutcome"), sv = t.Ix("Severity"); t.Prio = delegate(object[] r){ return Lg(r, al) + Lg(r, un) > 0 || St(r, sv) == "critical" || St(r, sv) == "high"; }; } T.Add(t);
 
-    t = new FgTable("utm_ips", 5, "Attack", "Severity", "SrcIP", "DstIP", "DstPort", "Count", "Actions", "AttackID", "Direction", "SrcCountry", "Users", "Ref", "First_UTC", "Last_UTC");
-    foreach(FgAgg a in IPSA.Values) t.Add(a.S0, a.S4, a.S1, a.S2, a.S3, a.N, a.List(0), a.List(1), a.List(2), a.List(3), a.List(5), a.List(4), Ts(a.First), Ts(a.Last));
-    t.Sort(); T.Add(t);
+    t = new FgTable("utm_app", 4, "App", "Category", "Risk", "SrcIP", "Count", "Blocked", "Allowed", "UnknownOutcome", "Actions", "Destinations", "TopDestinations", "Users", "Ports", "Countries", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in APPA.Values) t.Add(a.S0, a.S2, a.S3, a.S1, a.N, a.C[1], a.C[2], a.C[0], a.List(0), a.Distinct(1), a.Top(1, 3), a.Top(2, 3), a.Top(3, 4), a.Top(4, 4), Ts(a.First), Ts(a.Last));
+    t.Sort(); { int ca = t.Ix("Category"); t.Prio = delegate(object[] r){ return RiskyApp(St(r, ca)); }; } T.Add(t);
 
-    t = new FgTable("utm_app", 4, "App", "Category", "Risk", "SrcIP", "Count", "Actions", "Destinations", "TopDestinations", "Users", "Ports", "Countries", "First_UTC", "Last_UTC");
-    foreach(FgAgg a in APPA.Values) t.Add(a.S0, a.S2, a.S3, a.S1, a.N, a.List(0), a.Distinct(1), a.Top(1, 3), a.Top(2, 3), a.Top(3, 4), a.Top(4, 4), Ts(a.First), Ts(a.Last));
-    t.Sort(); T.Add(t);
-
-    t = new FgTable("utm_web", 3, "Hostname", "Category", "SrcIP", "Count", "Actions", "Users", "Countries", "Profiles", "SampleURL", "First_UTC", "Last_UTC");
-    foreach(FgAgg a in WEBA.Values) t.Add(a.S0, a.S2, a.S1, a.N, a.List(0), a.Top(1, 3), a.List(2), a.List(3), a.S3, Ts(a.First), Ts(a.Last));
-    t.Sort(); T.Add(t);
+    t = new FgTable("utm_web", 3, "Hostname", "Category", "SrcIP", "Count", "Blocked", "Allowed", "UnknownOutcome", "Actions", "Users", "Countries", "Profiles", "SampleURL", "First_UTC", "Last_UTC");
+    foreach(FgAgg a in WEBA.Values) t.Add(a.S0, a.S2, a.S1, a.N, a.C[1], a.C[2], a.C[0], a.List(0), a.Top(1, 3), a.List(2), a.List(3), a.S3, Ts(a.First), Ts(a.Last));
+    t.Sort(); { int ca = t.Ix("Category"); t.Prio = delegate(object[] r){ return MALCAT.IsMatch(St(r, ca)); }; } T.Add(t);
 
     t = new FgTable("utm_web_categories", 2, "Category", "Action", "Count", "Hostnames", "Sources", "TopHostnames", "First_UTC", "Last_UTC");
     foreach(FgAgg a in WEBC.Values) t.Add(a.S0, a.S1, a.N, a.Distinct(0), a.Distinct(1), a.Top(0, 6), Ts(a.First), Ts(a.Last));
@@ -924,14 +1098,6 @@ public static class FgEngine {
     t = new FgTable("ioc_terms", 1, "Term", "Hits", "Categories", "SrcIPs", "DstIPs", "First_UTC", "Last_UTC");
     foreach(FgAgg a in IOCT.Values) t.Add(a.S0, a.N, a.Top(0, 5), a.Top(1, 5), a.Top(2, 5), Ts(a.First), Ts(a.Last));
     t.Sort(); T.Add(t);
-
-    t = new FgTable("ioc_hits", 0, "Time_UTC", "Term", "Category", "SrcIP", "DstIP", "DstPort", "User", "Action", "File", "RawLine");
-    foreach(object[] r in IOCH) t.Rows.Add(r); t.Sort(); T.Add(t);
-
-    TL.Sort(delegate(FgEvent a, FgEvent b){ return b.Ms.CompareTo(a.Ms); });
-    t = new FgTable("timeline", -1, "Time_UTC", "Category", "Severity", "Summary", "Src", "User", "Detail");
-    foreach(FgEvent e in TL) t.Add(Ts(e.Ms), e.Cat, e.Sev, e.Summary, e.Src, e.User, e.Detail);
-    T.Add(t);
     return T;
   }
 
@@ -957,11 +1123,11 @@ public static class FgEngine {
     if(v.IndexOfAny(new char[]{ ',', '"', '\r', '\n' }) >= 0) v = "\"" + v.Replace("\"", "\"\"") + "\"";
     return v;
   }
+  public static void CsvRow(TextWriter w, object[] r){ for(int c = 0; c < r.Length; c++){ if(c > 0) w.Write(','); w.Write(Cq(r[c])); } w.Write("\r\n"); }
   static void WriteCsv(string path, FgTable t){
     using(StreamWriter w = new StreamWriter(path, false, new UTF8Encoding(true))){
-      for(int c = 0; c < t.Cols.Length; c++){ if(c > 0) w.Write(','); w.Write(Cq(t.Cols[c])); }
-      w.Write("\r\n");
-      foreach(object[] r in t.Rows){ for(int c = 0; c < r.Length; c++){ if(c > 0) w.Write(','); w.Write(Cq(r[c])); } w.Write("\r\n"); }
+      CsvRow(w, t.Cols);
+      foreach(object[] r in t.Rows) CsvRow(w, r);
     }
   }
 }
@@ -1001,7 +1167,7 @@ function bootLog(msg){
 window.onerror=function(msg,url,line){ bootLog("ONERROR line "+line+": "+msg); return false; };
 bootLog("script top-level reached");
 
-var APP_VERSION = "0.2.0";
+var APP_VERSION = "0.2.1";
 var APP_NAME = "FortiGate-Log-Analyzer";
 var MAXROWS = 6000;
 var DATA = null;                 // the loaded engine JSON
@@ -1241,14 +1407,23 @@ function unsweptTerms(){
   for(i=0;i<IOCS.length;i++) if(!had["#"+IOCS[i]]) out.push(IOCS[i]);
   return out;
 }
-/* re-process the loaded run's input with the current IOC list (the input / host / output fields are reused) */
+/* re-process the LOADED run with the current IOC list. Bound to the run's own recorded context (RUNCTX: input,
+   host, output folder, engine window) - never to whatever the control panel holds, which may be a different case.
+   The control panel is overwritten with that context first so what you see is what runs. */
 function resweep(){
   if(BUSY){ setStatus("A run is already in progress","err"); return; }
-  if(!trimStr($("inPath").value) && DATA && DATA.input) $("inPath").value=DATA.input;
-  if(!trimStr($("hostName").value) && DATA && DATA.host){ $("hostName").value=DATA.host; syncOutDir(); }
-  if(!trimStr($("inPath").value)){ setStatus("Set the input folder first (this run was loaded without one)","err"); return; }
+  var c=RUNCTX;
+  if(!c || !c.input){ setStatus("This run does not record its input folder - set the input and process it instead","err"); return; }
+  var parts=String(c.input).split("|"), fso=new ActiveXObject("Scripting.FileSystemObject");
+  for(var i=0;i<parts.length;i++){ var q=trimStr(parts[i]); if(q && !fso.FileExists(q) && !fso.FolderExists(q)){ setStatus("The loaded run's input is no longer at "+q+" - set the input and process it instead","err"); return; } }
+  if(!confirm("Re-sweep the LOADED run:\n\nInput:  "+c.input+"\nHost:   "+c.host+"\nOutput: "+c.outDir+(c.winFrom||c.winTo?("\nWindow: "+(c.winFrom||"..")+" - "+(c.winTo||"..")):"")+"\n\nwith IOC terms: "+IOCS.join(", "))) return;
+  $("inPath").value=c.input; $("hostName").value=c.host; HOST_TOUCHED=true; HOST_LOCK=true;
+  $("outDir").value=c.outDir; OUT_TOUCHED=true;
+  $("pFrom").value=c.winFrom||""; $("pTo").value=c.winTo||""; $("pWinEngine").checked=!!(c.winFrom||c.winTo);
+  hostHint(LOGHOST.name, LOGHOST.src);
   VIEW="ioc"; SUB="ioc_terms"; processRun();
 }
+var RUNCTX=null;   // the loaded run's own processing context (set by loadJson, used only by resweep)
 
 /* ---------- run provenance (family) ---------- */
 var CASE_FROM="", CASE_TO="", RUNINFO_LAST=null;
@@ -1331,10 +1506,11 @@ function loadJson(path){
   /* runs written before the v0.2.0 rename (app "FortiGate-Log-Triage") still load */
   if(!obj || (obj.app!==APP_NAME && obj.app!=="FortiGate-Log-Triage") || !obj.tables){ setStatus("That JSON is not a FortiGate Log Analyzer run","err"); return false; }
   DATA=obj; JSONPATH=path; if(!LASTOUTDIR) LASTOUTDIR=parentDir(path);
+  RUNCTX={input:String(obj.input||""), host:String(obj.host||""), outDir:String(obj.outDir||parentDir(path)), winFrom:String(obj.winFrom||""), winTo:String(obj.winTo||"")};
   TABLES={};
   for(var name in obj.tables){ if(!obj.tables.hasOwnProperty(name)) continue; var t=obj.tables[name], ix={};
     for(var c=0;c<t.cols.length;c++) ix[t.cols[c]]=c;
-    TABLES[name]={name:name, cols:t.cols, rows:t.rows, total:t.total, ix:ix, flags:[]}; }
+    TABLES[name]={name:name, cols:t.cols, rows:t.rows, total:t.total, prioTotal:t.prioTotal||0, ix:ix, flags:[]}; }
   if(!trimStr($("hostName").value) && obj.host) $("hostName").value=obj.host;
   /* the engine records devname= values and hostname-setting events in the devices table - offer them if they differ */
   var dt=TABLES.devices; if(dt){ for(var di=0;di<dt.rows.length;di++){ var dn=dt.rows[di][dt.ix["DevName"]]; if(dn){ hostHint(dn, String(dt.rows[di][dt.ix["DevID"]]).indexOf("hostname setting")>=0?"hostname setting event":"devname="); break; } } }
@@ -1364,13 +1540,19 @@ function cfgRisk(path){
   return 0;
 }
 var RULES={
-  admin_src:function(t,r,T){ var f=n(t,r,"Failed"), s=n(t,r,"Succeeded"), pub=v(t,r,"Public")==="yes";
-    if(s>0 && pub) T.push([3,"INTERNET-ADMIN-LOGIN"]); if(s>0 && f>=5) T.push([3,"FAIL-THEN-SUCCESS"]);
+  /* FAIL-THEN-SUCCESS needs the engine's timing column: failures that fell in the 24 h BEFORE a success from the
+     same source (or for the same account). Totals alone (some failures, some successes, any order) only earn the
+     neutral FAILURES+SUCCESSES tag. */
+  admin_src:function(t,r,T){ var f=n(t,r,"Failed"), s=n(t,r,"Succeeded"), pub=v(t,r,"Public")==="yes", fb=n(t,r,"FailsIn24hBeforeOk");
+    if(s>0 && pub) T.push([3,"INTERNET-ADMIN-LOGIN"]);
+    if(s>0 && fb>=5) T.push([3,"FAIL-THEN-SUCCESS"]); else if(s>0 && f>0) T.push([1,"FAILURES+SUCCESSES"]);
     if(f>=20) T.push([2,"BRUTE-FORCE"]); else if(f>0 && pub) T.push([1,"INTERNET"]);
     if(n(t,r,"Lockouts")>0) T.push([1,"LOCKOUT"]); if(n(t,r,"SSHNegFail")>0) T.push([1,"SSH-SCAN"]); },
-  admin_user:function(t,r,T){ var f=n(t,r,"Failed"), s=n(t,r,"Succeeded");
-    if(s>0 && f>=10) T.push([3,"FAIL-THEN-SUCCESS"]); else if(s>0) T.push([1,"VALID-ADMIN"]);
+  admin_user:function(t,r,T){ var f=n(t,r,"Failed"), s=n(t,r,"Succeeded"), fb=n(t,r,"FailsIn24hBeforeOk");
+    if(s>0 && fb>=10) T.push([3,"FAIL-THEN-SUCCESS"]); else if(s>0) T.push([1,"VALID-ADMIN"]);
     if(f>=100) T.push([2,"TARGETED"]); },
+  files:function(t,r,T){ var st=v(t,r,"Status");
+    if(/^FAILED/.test(st)) T.push([3,"READ-FAILED"]); else if(/^PARTIAL/.test(st)) T.push([3,"PARTIAL-READ"]); else if(/^skipped/.test(st)) T.push([1,"NOT-FORTIGATE"]); },
   admin_sessions:function(t,r,T){ var src=v(t,r,"SrcIP");
     if(v(t,r,"Event")==="login ok" && isPublicIp(src)) T.push([3,"INTERNET-ADMIN-LOGIN"]);
     if(v(t,r,"State")==="Config-Changed") T.push([1,"CONFIG-CHANGED"]);
@@ -1386,7 +1568,7 @@ var RULES={
     if(/(log|disk).*(clear|delet|format)/i.test(v(t,r,"LogDesc")) && v(t,r,"User")) T.push([3,"LOG-TAMPER"]); },
   event_summary:function(t,r,T){ if(/emergency|alert|critical/.test(v(t,r,"Level"))) T.push([1,v(t,r,"Level").toUpperCase()]); },
   vpn_ssl:function(t,r,T){ var up=n(t,r,"TunnelUp"), fl=n(t,r,"LoginFail");
-    if(up>0 && fl>=5) T.push([3,"FAIL-THEN-SUCCESS"]); if(fl>=20) T.push([2,"BRUTE-FORCE"]);
+    if(up>0 && n(t,r,"FailsIn24hBeforeUp")>=5) T.push([3,"FAIL-THEN-SUCCESS"]); if(fl>=20) T.push([2,"BRUTE-FORCE"]);
     if(up>0 && SSL_HOME && v(t,r,"Country") && v(t,r,"Country")!==SSL_HOME && v(t,r,"Country")!=="Reserved") T.push([2,"UNUSUAL-COUNTRY"]); },
   vpn_ipsec:function(t,r,T){ if(v(t,r,"Tunnel")==="(no tunnel matched)" && n(t,r,"Phase1Err")>0) T.push([1,"UNKNOWN-PEER"]);
     else if(n(t,r,"Phase1Err")>=50) T.push([1,"NEGOTIATION-ERRORS"]); },
@@ -1407,13 +1589,16 @@ var RULES={
   traffic_big_sessions:function(t,r,T){ var s=n(t,r,"SentBytes");
     if(SASE_RE.test(v(t,r,"Service")+" "+v(t,r,"App"))){ if(s>=MB100) T.push([1,"SASE-PROXY"]); }
     else if(s>=GB) T.push([3,"BULK-UPLOAD"]); else if(s>=MB100) T.push([2,"LARGE-UPLOAD"]); },
-  utm_av:function(t,r,T){ T.push(/block/i.test(v(t,r,"Action"))?[2,"MALWARE-BLOCKED"]:[3,"MALWARE-PASSED"]); },
+  /* UTM outcomes come from the engine's per-record mapping of FortiOS actions (blocked / allowed / unknown - see Help),
+     counted per aggregate row, so one blocked request can never hide an allowed one */
+  utm_av:function(t,r,T){ var o=v(t,r,"Outcome"); T.push(o==="allowed"?[3,"MALWARE-ALLOWED"]:(o==="blocked"?[2,"MALWARE-BLOCKED"]:[2,"OUTCOME-UNKNOWN"])); },
   utm_ips:function(t,r,T){ var s=v(t,r,"Severity"); if(/critical|high/i.test(s)) T.push([3,"IPS-"+s.toUpperCase()]); else if(/medium/i.test(s)) T.push([2,"IPS-MEDIUM"]);
-    if(!/drop|block|reset|clear_session/i.test(v(t,r,"Actions"))) T.push([2,"NOT-BLOCKED"]); },
-  utm_app:function(t,r,T){ var cat=v(t,r,"Category"), allowed=!/^(block|reset)(, (block|reset))*$/i.test(v(t,r,"Actions"));
-    if(RISKY_APPCAT[cat]) T.push(allowed?[3,cat.toUpperCase()+"-ALLOWED"]:[2,cat.toUpperCase()]);
+    if(n(t,r,"Allowed")>0) T.push([2,"NOT-BLOCKED"]); else if(n(t,r,"UnknownOutcome")>0) T.push([1,"OUTCOME-UNKNOWN"]); },
+  utm_app:function(t,r,T){ var cat=v(t,r,"Category");
+    if(RISKY_APPCAT[cat]) T.push(n(t,r,"Allowed")>0?[3,cat.toUpperCase()+"-ALLOWED"]:(n(t,r,"UnknownOutcome")>0?[2,cat.toUpperCase()+"-OUTCOME-UNKNOWN"]:[2,cat.toUpperCase()]));
     if(/critical/i.test(v(t,r,"Risk"))) T.push([1,"CRITICAL-RISK"]); },
-  utm_web:function(t,r,T){ if(MAL_CAT_RE.test(v(t,r,"Category"))) T.push(/block/i.test(v(t,r,"Actions"))?[2,"BAD-CATEGORY"]:[3,"BAD-CATEGORY-ALLOWED"]); },
+  utm_web:function(t,r,T){ if(!MAL_CAT_RE.test(v(t,r,"Category"))) return;
+    T.push(n(t,r,"Allowed")>0?[3,"BAD-CATEGORY-ALLOWED"]:(n(t,r,"UnknownOutcome")>0?[2,"BAD-CATEGORY-OUTCOME-UNKNOWN"]:[2,"BAD-CATEGORY-BLOCKED"])); },
   utm_web_categories:function(t,r,T){ if(MAL_CAT_RE.test(v(t,r,"Category"))) T.push([2,"BAD-CATEGORY"]); },
   utm_other:function(t,r,T){ if(/anomaly|dlp/i.test(v(t,r,"Type"))) T.push([2,"ANOMALY"]); if(MAL_CAT_RE.test(v(t,r,"Category_Severity"))) T.push([2,"BAD-CATEGORY"]); },
   ioc_terms:function(t,r,T){ T.push([3,"IOC"]); },
@@ -1457,9 +1642,20 @@ function addF(s,title,detail,view,sub,q){ FINDINGS.push({s:s,t:title,d:detail||"
 function topList(arr,k){ return arr.slice(0,k).join(", ")+(arr.length>k?(" +"+(arr.length-k)+" more"):""); }
 function spanH(a,b){ return (msOf(b)-msOf(a))/3600000; }
 function fmtSpan(h){ return h>=48?((h/24).toFixed(1)+" days"):(h.toFixed(1)+" h"); }
+/* findings over a table the JSON only previews must say so: rules see at most previewCap rows (priority rows are
+   kept first by the engine, but counts across the table can still be short). Universal claims ("all blocked") are
+   only made from the engine's full-data stats. */
+function part(t){ return (t.total>t.rows.length)?(" [from the "+nf(t.rows.length)+"-row preview of "+nf(t.total)+" rows - the engine keeps priority rows in the preview; counts here may be low, Open full CSV for all]"):""; }
+function stat3(name){ var s=(DATA&&DATA.stats&&DATA.stats[name])||null; return s?{b:+s.blocked||0, a:+s.allowed||0, u:+s.unknown||0, has:true}:{b:0,a:0,u:0,has:false}; }
 function buildFindings(){
   FINDINGS=[];
   var i, t, r;
+  /* input completeness first: a run that silently missed files is the worst kind of wrong */
+  if(DATA.filesFailed || DATA.filesPartial){ var bf=[]; t=tbl("files");
+    for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=3) bf.push(v(t,t.rows[i],"File")+" ("+v(t,t.rows[i],"Status")+")"); }
+    addF(4,"Input incomplete: "+nf(DATA.filesFailed||0)+" file(s) could not be read, "+nf(DATA.filesPartial||0)+" read only partially - every table below is missing their lines",topList(bf,6)+". Sources > Files has the error for each. Fix or re-export those files and process again before relying on absence of evidence.","src","files",""); }
+  if(DATA.stats && DATA.stats.roleFallbackSessions)
+    addF(0,nf(DATA.stats.roleFallbackSessions)+" traffic sessions had no usable interface role - direction (Internet vs internal) was taken from the address class","FortiOS marks some interfaces (IPsec tunnels, loopbacks, zones) with role 'undefined'. VPN sessions are treated as internal; for the rest, public addresses count as Internet. If the site uses public address space internally, read the Traffic tables with that in mind.","trf","traffic_services","");
   /* coverage gaps: a log type that spans far less than the overall window is usually an export row cap */
   t=tbl("coverage"); var gmin=0, gmax=0;
   for(i=0;i<t.rows.length;i++){ var a=msOf(v(t,t.rows[i],"First_UTC")), b=msOf(v(t,t.rows[i],"Last_UTC")); if(a&&(!gmin||a<gmin)) gmin=a; if(b>gmax) gmax=b; }
@@ -1475,20 +1671,21 @@ function buildFindings(){
       var tg=String(v(t,r,"TargetIPs")).split(", "); for(var k=0;k<tg.length;k++) if(tg[k]) tgt["#"+tg[k]]=1;
       var me=String(v(t,r,"Methods")).split(", "); for(k=0;k<me.length;k++) if(me[k]) meth["#"+me[k]]=1; }
     if(s>0 && v(t,r,"Public")==="yes") okPub.push(ip+" ("+s+" ok)");
-    if(s>0 && f>=5) fts.push(ip+" ("+f+" failed, then "+s+" ok)"); }
+    if(s>0 && n(t,r,"FailsIn24hBeforeOk")>=5) fts.push(ip+" ("+nf(n(t,r,"FailsIn24hBeforeOk"))+" failures in the 24 h before a success)"); }
   function keys(o){ var a=[]; for(var x in o) if(o.hasOwnProperty(x)) a.push(x.substring(1)); return a; }
-  if(okPub.length) addF(4,"Administrator login SUCCEEDED from the Internet: "+topList(okPub,4),"An admin session from a public address. Confirm with the account owner; check Config & system for what changed during the session.","adm","admin_src","");
-  if(fts.length) addF(3,"Admin login succeeded after repeated failures: "+topList(fts,4),"Successful admin logins from a source that first failed several times - credential guessing that worked, or a user mistyping. Verify.","adm","admin_src","");
+  if(okPub.length) addF(4,"Administrator login SUCCEEDED from the Internet: "+topList(okPub,4),"An admin session from a public address. Confirm with the account owner; check Config & system for what changed during the session."+part(t),"adm","admin_src","");
+  if(fts.length) addF(3,"Admin login succeeded within 24 h of repeated failures from the same source: "+topList(fts,4),"Failures and a later success from one address. Credential guessing that worked - or several admins behind one NAT address, or one user mistyping. The accounts involved are in TopUsers; check whether the successful account is one that was being guessed."+part(t),"adm","admin_src","");
   if(pubIps) addF(3,"Management interface reachable from the Internet: "+nf(pubF)+" failed admin logins from "+nf(pubIps)+" public IPs",
-    "Targets: "+topList(keys(tgt),4)+" via "+keys(meth).join(", ")+". Admin access (HTTPS / SSH) on a WAN interface is the entry point for FortiOS auth-bypass exploits (CVE-2022-40684, CVE-2024-55591) and brute force. Restrict with trusted hosts / local-in policy, or move admin off the WAN.","adm","admin_src","");
+    "Targets: "+topList(keys(tgt),4)+" via "+keys(meth).join(", ")+". Admin access (HTTPS / SSH) on a WAN interface is the entry point for FortiOS auth-bypass exploits (CVE-2022-40684, CVE-2024-55591) and brute force. Restrict with trusted hosts / local-in policy, or move admin off the WAN."+part(t),"adm","admin_src","");
   t=tbl("admin_sessions"); var vu={}, valid=[];
   for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(v(t,r,"Event")!=="login ok") continue; var uu=v(t,r,"User"), o=vu["#"+uu]; if(!o){ o=vu["#"+uu]={n:0,src:{}}; } o.n++; o.src["#"+v(t,r,"SrcIP")]=1; }
   for(var vk in vu) if(vu.hasOwnProperty(vk)) valid.push(vk.substring(1)+" ("+vu[vk].n+" login"+(vu[vk].n===1?"":"s")+" from "+keys(vu[vk].src).join(", ")+")");
-  if(valid.length) addF(1,"Admin accounts that logged in: "+topList(valid,4),"Every successful admin session is on Admin access > Successful logins / logouts.","adm","admin_sessions","");
-  /* config */
+  if(valid.length) addF(1,"Admin accounts that logged in: "+topList(valid,4),"Every successful admin session is on Admin access > Successful logins / logouts."+part(t),"adm","admin_sessions","");
+  /* config: the engine keeps every risky change in the preview and counts them over the full data */
   t=tbl("config_changes"); var cH=0, cM=0, cu={}; for(i=0;i<t.rows.length;i++){ var fs=t.flags[i].s; if(fs>=3) cH++; else if(fs>=2) cM++; cu["#"+v(t,t.rows[i],"User")]=1; }
-  if(t.total) addF(cH?3:(cM?2:1),nf(t.total)+" configuration change"+(t.total===1?"":"s")+" by "+keys(cu).join(", ")+(cH?(" - "+cH+" touch admin accounts or come from the Internet"):"")+(cM?(" - "+cM+" touch policy / interfaces / VPN / logging"):""),
-    "Attacker persistence on a FortiGate is usually a new admin or API user, a firewall policy or VIP opening a path in, an SSL-VPN user / group change, or logging turned down. Review the flagged rows.","cfg","config_changes","");
+  var cR=(DATA.stats&&DATA.stats.configRisky!=null)?DATA.stats.configRisky:(cH+cM);
+  if(t.total) addF(cH?3:(cM?2:1),nf(t.total)+" configuration change"+(t.total===1?"":"s")+" by "+keys(cu).join(", ")+(t.total>t.rows.length?" (users from the preview)":"")+" - "+nf(cR)+" touch admin accounts, policy, interfaces, VPN, logging or came from the Internet"+(cH?(" ("+cH+" high in the preview)"):""),
+    "Attacker persistence on a FortiGate is usually a new admin or API user, a firewall policy or VIP opening a path in, an SSL-VPN user / group change, or logging turned down. Review the flagged rows."+part(t),"cfg","config_changes","");
   t=tbl("system_notable"); if(t.nflag) addF(2,nf(t.nflag)+" notable system events (firmware, critical/alert level, log tampering)","","cfg","system_notable","");
   /* VPN */
   t=tbl("vpn_ssl"); var sUp=0, sFail=0, sUsers={}, sBrute=[], sOdd=[];
@@ -1515,17 +1712,22 @@ function buildFindings(){
   t=tbl("traffic_lateral"); var sw=[]; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=3) sw.push(v(t,t.rows[i],"SrcIP")+" -> "+n(t,t.rows[i],"Targets")+" hosts on "+v(t,t.rows[i],"Port")); }
   if(sw.length) addF(3,"Internal hosts sweeping admin ports (SMB / RDP / WinRM / SSH): "+topList(sw,4),"One source reaching 20+ internal hosts on an admin port is scanning or lateral movement (or a management server - confirm).","trf","traffic_lateral","");
   t=tbl("traffic_exposed"); var ex=[]; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=2) ex.push(v(t,t.rows[i],"DstIP")+":"+v(t,t.rows[i],"Port")+" ("+n(t,t.rows[i],"Sources")+" srcs)"); }
-  if(ex.length) addF(3,"Services reachable from the Internet with accepted sessions: "+topList(ex,5),"Inbound sessions the firewall allowed from WAN. Admin services (RDP / SMB / SSH / WinRM) exposed this way are a common initial-access path.","trf","traffic_exposed","");
+  if(ex.length) addF(3,"Services reachable from the Internet with accepted sessions: "+topList(ex,5),"Inbound sessions the firewall allowed from WAN (Terminations shows how they ended - a server reset still means the firewall let the session through). Admin services (RDP / SMB / SSH / WinRM) exposed this way are a common initial-access path."+part(t),"trf","traffic_exposed","");
   /* security profiles */
-  t=tbl("utm_av"); var avP=0; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=3) avP++; }
-  if(t.total) addF(avP?3:2,"Antivirus: "+nf(t.total)+" detection"+(t.total===1?"":"s")+(avP?(", "+avP+" NOT blocked"):" (all blocked)"),"Detected files, the internal host involved and the source are on Security profiles > Antivirus.","utm","utm_av","");
-  t=tbl("utm_ips"); if(t.nflag) addF(3,"IPS: "+nf(t.nflag)+" high / critical or unblocked signature groups","","utm","utm_ips","");
-  t=tbl("utm_app"); var ra={}, raAllowed=0;
-  for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(RISKY_APPCAT[v(t,r,"Category")]){ var key=v(t,r,"App"); if(!ra["#"+key]) ra["#"+key]={n:0,src:0}; ra["#"+key].n+=n(t,r,"Count"); ra["#"+key].src++; if(t.flags[i].s>=3) raAllowed++; } }
+  /* outcome totals come from the engine's full-data stats (every record, before any preview cap) */
+  function outc(s){ return nf(s.a)+" allowed, "+nf(s.b)+" blocked"+(s.u?(", "+nf(s.u)+" with an unrecognised action (outcome unknown)"):""); }
+  t=tbl("utm_av"); var av=stat3("av");
+  if(av.has && av.a+av.b+av.u) addF(av.a?3:(av.u?2:2),"Antivirus: "+nf(av.a+av.b+av.u)+" detection"+(av.a+av.b+av.u===1?"":"s")+" - "+outc(av),
+    (av.a?"Detections the firewall let through (monitor / passthrough) mean the file reached the host - check it. ":"")+"Detected files, the internal host involved and the source are on Security profiles > Antivirus (allowed and unknown-outcome rows are always kept in the preview)."+part(t),"utm","utm_av","");
+  else if(t.total) addF(2,"Antivirus: "+nf(t.total)+" detection"+(t.total===1?"":"s"),"Outcome totals are not in this run (processed by an older version)."+part(t),"utm","utm_av","");
+  t=tbl("utm_ips"); var ips=stat3("ipsHigh");
+  if(t.nflag) addF(3,"IPS: "+nf(t.nflag)+" high / critical or unblocked signature groups"+(ips.has&&(ips.a+ips.b+ips.u)?(" - high/critical events: "+outc(ips)):""),part(t),"utm","utm_ips","");
+  t=tbl("utm_app"); var ra={}, aps=stat3("appRisky");
+  for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(RISKY_APPCAT[v(t,r,"Category")]){ var key=v(t,r,"App"); if(!ra["#"+key]) ra["#"+key]={n:0,src:0}; ra["#"+key].n+=n(t,r,"Count"); ra["#"+key].src++; } }
   var ral=[]; for(var ak in ra) if(ra.hasOwnProperty(ak)) ral.push(ak.substring(1)+" ("+ra[ak].src+" hosts, "+nf(ra[ak].n)+" hits)");
-  if(ral.length) addF(raAllowed?3:2,"Remote-access / proxy / P2P applications in use: "+topList(ral,5)+(raAllowed?(" - "+raAllowed+" host/app pairs NOT blocked"):" - all blocked"),"Attackers favour remote-access tools (AnyDesk, TeamViewer, ScreenConnect) for hands-on access; blocked attempts still show which hosts run the client.","utm","utm_app","");
-  t=tbl("utm_web"); var bad=0, badA=0; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=2) bad++; if(t.flags[i].s>=3) badA++; }
-  if(bad) addF(badA?3:2,"Web filter: "+nf(bad)+" host/site pairs in malicious / phishing / C2 / proxy-avoidance categories"+(badA?(", "+badA+" allowed"):""),"","utm","utm_web","");
+  if(ral.length) addF(aps.a?3:2,"Remote-access / proxy / P2P applications in use: "+topList(ral,5)+" - "+(aps.has?outc(aps):"see the table for outcomes"),"Attackers favour remote-access tools (AnyDesk, TeamViewer, ScreenConnect) for hands-on access; blocked attempts still show which hosts run the client."+part(t),"utm","utm_app","");
+  t=tbl("utm_web"); var bad=0, wb=stat3("webBad"); for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=2) bad++; }
+  if(bad || wb.a+wb.b+wb.u) addF(wb.a?3:2,"Web filter: requests to malicious / phishing / C2 / proxy-avoidance categories - "+(wb.has?outc(wb):(nf(bad)+" host/site pairs")),(wb.a?"Allowed requests to these categories reached the site - check those hosts first (BAD-CATEGORY-ALLOWED rows). ":"")+nf(bad)+" host/site pairs are flagged in the table."+part(t),"utm","utm_web","");
   /* IOC */
   t=tbl("ioc_terms"); if(t.total){ var it=[]; for(i=0;i<t.rows.length;i++) it.push(v(t,t.rows[i],"Term")+" ("+nf(n(t,t.rows[i],"Hits"))+")"); addF(4,"IOC hits in the raw logs: "+topList(it,6),"Matching lines (with the full raw line) are on the IOC hits tab.","ioc","ioc_terms",""); }
   else if((DATA.iocTerms||[]).length) addF(0,"IOC sweep: "+DATA.iocTerms.length+" term(s) checked against every line - no hits","","ioc","ioc_terms","");
@@ -1564,6 +1766,11 @@ var TABLE_NOTES={
   traffic_big_sessions:"The 500 largest single outbound sessions by bytes sent.",
   utm_app:"Application-control detections per application and internal host. Remote.Access / Proxy / P2P categories are flagged; allowed ones higher than blocked.",
   coverage:"First / last line per log type. A type whose span is much shorter than the others was probably cut off by an export row limit.",
+  files:"Every file found under the input, with what happened to it: read, read (N gzip members), PARTIAL (a gzip member could not be decoded - lines after it are missing), FAILED (could not be opened or broke mid-read), or skipped (not FortiGate key=value). File is the path relative to the input folder, so same-named files in different folders stay separate.",
+  utm_av:"Every antivirus detection. Outcome is mapped from the FortiOS action: blocked (blocked, attachment-removed, quarantined...), allowed (monitored, passthrough...), or unknown (an action this app does not recognise - read the Action column). Allowed and unknown rows are always kept in the preview.",
+  utm_web:"Web-filter events per site and source. Blocked / Allowed / UnknownOutcome count individual requests, so a site that was blocked once and allowed once shows both.",
+  admin_user:"Admin login attempts per username. FailsIn24hBeforeOk = the most failures for this account that fell in the 24 h before one of its successful logins.",
+  vpn_events:"VPN events in time order (IPsec statistics / progress noise left out). The full CSV is in file order.",
   timeline:"Admin sessions, config changes, VPN logins, AV / IPS / app-control first-sightings and IOC hits merged on one stream, newest first."
 };
 function viewOf(id){ for(var i=0;i<VIEWS.length;i++) if(VIEWS[i].id===id) return VIEWS[i]; return VIEWS[0]; }
@@ -1676,7 +1883,7 @@ function renderTable(){
     h+="</tr>"; }
   $("tbl").innerHTML=h+"</tbody>";
   window.__viewIdx=idx;
-  var capNote=(t.total>t.rows.length)?(' <span class="maxwarn" title="'+esc("This table has "+nf(t.total)+" rows; the run JSON carries the first "+nf(t.rows.length)+" (engine order: most significant first). Open full CSV has all of them.")+'">&#9888; JSON holds '+nf(t.rows.length)+' of '+nf(t.total)+'</span>'):"";
+  var capNote=(t.total>t.rows.length)?(' <span class="maxwarn" title="'+esc("This table has "+nf(t.total)+" rows; the run JSON carries a "+nf(t.rows.length)+"-row preview. "+(t.prioTotal?("The engine keeps priority rows first ("+nf(t.prioTotal)+" in the full table"+(t.prioTotal>t.rows.length?", more than fit":"")+"), then the most significant / newest of the rest. "):"")+"Flags and counts on this screen cover the preview only. Open full CSV has every row.")+'">&#9888; preview: '+nf(t.rows.length)+' of '+nf(t.total)+' rows</span>'):"";
   $("count").innerHTML=nf(idx.length)+" of "+nf(t.rows.length)+" rows"+(t.nflag?(" &middot; "+nf(t.nflag)+" flagged"):"")+maxRowsWarn(lim, idx.length)+capNote;
   var ths=$("tbl").getElementsByTagName("th");
   for(var j=0;j<ths.length;j++){ ths[j].onclick=function(e){ e=e||window.event; var tg=e.target||e.srcElement; if(tg && /\bcgrip\b/.test(tg.className+"")) return;
@@ -1990,7 +2197,12 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li>All times are UTC (from FortiOS <code>eventtime</code>; <code>date</code>+<code>time</code>+<code>tz</code> when it is missing). The device timezone is shown on Overview.</li>
       <li>Only traffic that crosses the firewall is logged - same-subnet traffic never appears, and a policy with logging off leaves no trace.</li>
       <li>FortiAnalyzer CSV exports and CEF-format syslog are not read in this version (key=value only).</li>
-      <li>Columns are resizable; Export view writes every row the view shows; Open full CSV opens the uncapped table.</li>
+      <li>Columns are resizable; Export view writes every row the view shows; Open full CSV opens the complete table (event lists such as config changes, antivirus and the timeline are written to their CSV while the logs are read, so nothing is ever dropped from them; their CSV is in file order).</li>
+      <li><b>Previews.</b> The run JSON holds at most 6000 rows per table. The engine fills it with priority rows first (allowed / unknown-outcome malware, risky config changes, admin logins from public IPs, successful logins, risky apps, malicious-category sites, accepted inbound sources...) and then the most significant or newest of the rest. Antivirus, web-filter, application and IPS outcome totals in the findings are counted over every record, not the preview; other findings on a previewed table say so.</li>
+      <li><b>Outcomes.</b> Security-profile actions are mapped per record: blocked = blocked / block / deny / dropped / reset / clear_session / attachment-removed / quarantined / replaced; allowed = pass / passthrough / monitored / allow / accept / detected / exempt / log; anything else is counted as unknown and never assumed blocked.</li>
+      <li><b>Fail-then-success</b> needs failures that fell in the 24 h before a success (same source, or same account on By username) - totals of failures and successes in any order only get a neutral FAILURES+SUCCESSES tag. Several admins behind one NAT address can still trigger it; check TopUsers.</li>
+      <li><b>Traffic direction</b> comes from the interface roles: wan = Internet, lan / dmz = internal. An 'undefined' role on a VPN session (IPsec tunnel, ssl.root) counts as internal; otherwise the address class decides, and Overview says how many sessions needed that fallback.</li>
+      <li><b>Input completeness.</b> Every file under the input is listed on Sources &gt; Files with its status. Multi-member gzip files are followed member by member; unreadable, corrupt or partly-decoded files raise a CRITICAL finding.</li>
     </ul>
     <p class="muted" style="font-size:11px">MIT &copy; 2026 Ben Morris - <span class="lnk" onclick="copyFindings()">copy the findings list to the clipboard</span></p>
   </div>

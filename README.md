@@ -16,8 +16,8 @@ The `.hta` is the launcher and the viewer. A PowerShell engine is embedded in it
 
 | Output | What it is |
 |---|---|
-| `<host>-FortiGate-<stamp>.json` | Every table, capped at 6000 rows each - what the viewer loads |
-| `<stamp>_<table>.csv` | Every table in full (Open full CSV in the viewer) |
+| `<host>-FortiGate-<stamp>.json` | Every table as a preview of up to 6000 rows, with true totals and full-data outcome counts - what the viewer loads. Priority rows (allowed malware, risky config changes, admin logins from the Internet, accepted inbound sources...) are always kept first. |
+| `<stamp>_<table>.csv` | Every table in full (Open full CSV in the viewer). Event lists stream to disk while the logs are read, so nothing is dropped. |
 | `runinfo.json` | Family provenance entry (app, host, input, files, triage summary) |
 
 Output goes to `_Processed\<host>\FortiGate-Log-Analyzer\` next to the app. Flag rules and findings live in the viewer, so they can change without reprocessing.
@@ -32,7 +32,10 @@ Output goes to `_Processed\<host>\FortiGate-Log-Analyzer\` next to the app. Flag
 ## Notes
 
 - All times are UTC, from FortiOS `eventtime` (seconds, ms, us or ns are all recognised); `date` + `time` + `tz` is the fallback.
-- Traffic direction comes from the interface roles (`lan` / `wan`), so IPsec or SD-WAN overlays with non-RFC1918 addressing are classified correctly. Bytes use the per-interval deltas, so long sessions are not double-counted.
+- Traffic direction comes from the interface roles (`wan` = Internet, `lan` / `dmz` = internal). An `undefined` role on a VPN session counts as internal, so IPsec or SD-WAN overlays with non-RFC1918 addressing are classified correctly; other undefined roles fall back to the address class, and Overview says how many sessions needed that. Bytes use the per-interval deltas, so long sessions are not double-counted.
+- **Input completeness is reported.** Every file under the input gets a status (read, partial, failed, not FortiGate); multi-member gzip files are followed member by member; any unreadable or partly decoded file raises a critical finding.
+- Security-profile outcomes are mapped per record (blocked / allowed / unknown), so one blocked request never hides an allowed one, and an unrecognised action is never assumed blocked.
+- "Succeeded after repeated failures" requires failures in the 24 h before the success, not just both in the totals.
 - **Coverage gaps are called out.** A GUI download stops at a row limit, so a busy log type (forward traffic) can cover hours while the others cover days. Overview shows the span of each log type; export busy types day by day.
 - Uploads through a forward proxy / SASE (Zscaler, Netskope and similar) are tagged and not scored as exfiltration.
 - Only traffic that crosses the firewall is logged; same-subnet traffic and policies with logging off leave no trace.
