@@ -22,6 +22,10 @@ The `.hta` is the launcher and the viewer. A PowerShell engine is embedded in it
 
 Output goes to `_Processed\<host>\FortiGate-Log-Analyzer\` next to the app. Flag rules and findings live in the viewer, so they can change without reprocessing.
 
+## Manual
+
+The full field manual - getting logs off the FortiGate, every tab, the flag reference, a worked example and troubleshooting, illustrated with synthetic data - is [docs/FortiGate-Log-Analyzer-Manual.html](docs/FortiGate-Log-Analyzer-Manual.html) (one self-contained HTML file; download it and open it in a browser). The app's **Instructions** button downloads and opens the latest copy.
+
 ## Quick start
 
 1. Download `FortiGate-Log-Analyzer.hta` from the latest release (right-click > Properties > Unblock if Windows marks it).
