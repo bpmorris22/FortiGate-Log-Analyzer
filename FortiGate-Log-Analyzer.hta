@@ -214,7 +214,7 @@
         <span class="sep"></span>
         <button class="btn sm" id="fPub" title="Only rows whose source, destination or remote address (SrcIP / DstIP / RemoteIP / Src) is a public Internet address - e.g. admin attempts from the Internet, VPN logins from outside, UTM events involving external hosts. Address class only: sites using public space internally will see those rows too.">Internet IPs only</button>
         <button class="btn sm" id="fThru" title="Only what got through: accepted sessions, successful admin / VPN / user logins, tunnels that came up, and security-profile events whose outcome was allowed (monitored, passthrough...). Blocked and denied activity is hidden.">Allowed / succeeded only</button>
-        <button class="btn sm" id="fOff" title="Only events outside business hours in the FIREWALL's own timezone (from the logs' tz= field): before 07:00, from 19:00, or on Saturday / Sunday. Event tables only (rows with a single time). Useful for admin sessions, config changes, VPN logins and the timeline.">Off-hours only</button>
+        <button class="btn sm" id="fOff" title="Only events outside business hours on the FIREWALL&#39;s own clock: before 07:00, from 19:00, or on Saturday / Sunday. Each row is judged on the local date / time the firewall itself logged for it (with its tz= offset), so a run that crosses a daylight-saving change is right for every row. Rows without a logged local time are not guessed - they are left out and counted. Event tables only. Useful for admin sessions, config changes, VPN logins and the timeline.">Off-hours only</button>
         <span id="ctryWrap" class="hide"><span class="sep"></span><span class="chiplab" title="Filter by country (FortiGuard geolocation in the log)">country</span>
           <select id="fCtry" title="Only rows from / to one country, as FortiOS geolocated it (Country / SrcCountry column). The list shows this table's countries with their row counts. Reserved = private / internal address."><option value="">all countries</option></select></span>
         <span id="bytesWrap" class="hide"><span class="sep"></span><span class="chiplab" title="Filter by transfer volume">volume</span>
@@ -350,8 +350,10 @@ public class FgList {
   public string Name, PathCsv; public string[] Cols; public long Total, PrioTotal;
   public List<object[]> Prio = new List<object[]>(), Rest = new List<object[]>();
   StreamWriter W;
-  public FgList(string name, string dir, string stamp, params string[] cols){ Name = name; Cols = cols; PathCsv = Path.Combine(dir, stamp + "_" + name + ".csv"); }
-  public void Add(bool prio, params object[] row){
+  /* every event list ends with Local_Device: the firewall's own local clock for that line (see FgEngine.DeviceLocal) */
+  public FgList(string name, string dir, string stamp, params string[] cols){ Name = name; Cols = new string[cols.Length + 1]; cols.CopyTo(Cols, 0); Cols[cols.Length] = "Local_Device"; PathCsv = Path.Combine(dir, stamp + "_" + name + ".csv"); }
+  public void Add(bool prio, params object[] r){
+    object[] row = new object[r.Length + 1]; r.CopyTo(row, 0); row[r.Length] = FgEngine.CurLocal;
     Total++;
     if(W == null){ W = new StreamWriter(PathCsv, false, new UTF8Encoding(true)); FgEngine.CsvRow(W, Cols); }
     FgEngine.CsvRow(W, row);
@@ -371,58 +373,167 @@ public class FgList {
   public void Close(){ if(W != null){ W.Close(); W = null; } }
 }
 
-/* gzip reader that follows concatenated members (.NET Framework's GZipStream stops after the first). Each member's
-   end is proven by its trailer (CRC32 + ISIZE of the bytes it produced); trailing bytes that are not a valid
-   member are reported in Warning rather than silently ignored. */
+/* gzip reader with its own RFC 1951 inflater (after Mark Adler's puff.c). .NET Framework's GZipStream reads only the
+   first member and over-reads the input, so it can never say where a member ends; scanning the bytes for a trailer
+   pattern is fooled by repeated content or crafted header metadata. Decoding the deflate stream here means the end of
+   each member is KNOWN: the header (incl. FEXTRA / FNAME / FCOMMENT / FHCRC) is parsed and skipped, the deflate data
+   is decoded to its final block, then the CRC32 + ISIZE trailer is checked and the next bytes must be another gzip
+   header or end of file. Any other outcome is reported in Warning (file marked PARTIAL) or thrown (FAILED). */
 public class FgMultiGz : Stream {
-  FileStream fs; GZipStream gz; long len, memberStart; uint crc = 0xFFFFFFFF; long outLen; public string Warning = ""; public int Members = 0;
-  static uint[] TAB;
-  public FgMultiGz(string path){
-    if(TAB == null){ TAB = new uint[256]; for(uint i = 0; i < 256; i++){ uint c = i; for(int k = 0; k < 8; k++) c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1; TAB[i] = c; } }
-    fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20); len = fs.Length; memberStart = 0; Start();
-  }
-  void Start(){ fs.Position = memberStart; gz = new GZipStream(fs, CompressionMode.Decompress, true); crc = 0xFFFFFFFF; outLen = 0; Members++; }
-  public override int Read(byte[] buf, int off, int cnt){
-    while(true){
-      int n = gz.Read(buf, off, cnt);
-      if(n > 0){ for(int i = off; i < off + n; i++) crc = TAB[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8); outLen += n; return n; }
-      if(!Next()) return 0;
-    }
-  }
-  /* The decoder over-reads, so the member's compressed end is found from the file itself: scanning forward from the
-     member start, the member ends at the FIRST place where this member's trailer (CRC32 + ISIZE of exactly what was
-     decoded) sits AND is followed by end of file or a new gzip header. Never "trailer matches at EOF, so done": a
-     later member with identical content (A/B/A) has the same trailer, and that shortcut skipped the middle. */
-  bool Next(){
-    uint c = crc ^ 0xFFFFFFFF, isz = (uint)(outLen & 0xFFFFFFFF);
-    gz.Dispose(); gz = null;
-    byte c0 = (byte)c, c1 = (byte)(c >> 8), c2 = (byte)(c >> 16), c3 = (byte)(c >> 24);
-    byte s0 = (byte)isz, s1 = (byte)(isz >> 8), s2 = (byte)(isz >> 16), s3 = (byte)(isz >> 24);
-    long pos = memberStart + 12;                              // earliest trailer start: 10-byte header + 2-byte empty deflate
-    byte[] buf = new byte[(1 << 20) + 16];
-    bool trailerSeen = false;
-    while(pos + 8 <= len){
-      fs.Position = pos; int n = fs.Read(buf, 0, buf.Length); if(n < 8) break;
-      int lim = n - 8;                                        // trailer must fit in this buffer; the overlap re-reads the rest
-      for(int i = 0; i <= lim; i++){
-        if(buf[i] != c0 || buf[i + 1] != c1 || buf[i + 2] != c2 || buf[i + 3] != c3 || buf[i + 4] != s0 || buf[i + 5] != s1 || buf[i + 6] != s2 || buf[i + 7] != s3) continue;
-        long end = pos + i + 8; trailerSeen = true;
-        if(end == len) return false;                          // the last member: done
-        if(end + 3 <= len){
-          byte h0, h1, h2;
-          if(i + 10 < n){ h0 = buf[i + 8]; h1 = buf[i + 9]; h2 = buf[i + 10]; }
-          else { byte[] h = new byte[3]; fs.Position = end; fs.Read(h, 0, 3); h0 = h[0]; h1 = h[1]; h2 = h[2]; }
-          if(h0 == 0x1f && h1 == 0x8b && h2 == 0x08){ memberStart = end; Start(); return true; }
+  Stream src; byte[] ib = new byte[1 << 16]; int ipos, ilen; bool eof;
+  uint bitbuf; int bitcnt;
+  byte[] win = new byte[32768]; int wpos;
+  uint crc = 0xFFFFFFFF; long memberOut;
+  int state;            // 0 = need block header, 1 = huffman block, 2 = stored block, 3 = finished
+  bool lastBlock; int storedLeft, copyLen, copyDist;
+  Huff lencode, distcode;
+  public string Warning = ""; public int Members = 0;
+  static uint[] TAB; static Huff FIXL, FIXD;
+  static readonly short[] LBASE = { 3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258 };
+  static readonly short[] LEXT = { 0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0 };
+  static readonly short[] DBASE = { 1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577 };
+  static readonly short[] DEXT = { 0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13 };
+  static readonly int[] ORDER = { 16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15 };
+
+  class Huff {
+    public short[] count = new short[16], symbol; public int[] fast = new int[512];   // fast: 9-bit lookup, (len<<16)|sym, 0 = slow path
+    public Huff(short[] len, int off, int n){
+      symbol = new short[n];
+      for(int s = 0; s < n; s++) count[len[off + s]]++;
+      count[0] = 0; int left = 1;
+      for(int l = 1; l < 16; l++){ left <<= 1; left -= count[l]; if(left < 0) throw new InvalidDataException("bad deflate code lengths (over-subscribed)"); }
+      short[] offs = new short[16]; for(int l = 1; l < 15; l++) offs[l + 1] = (short)(offs[l] + count[l]);
+      for(int s = 0; s < n; s++) if(len[off + s] != 0) symbol[offs[len[off + s]]++] = (short)s;
+      // canonical codes -> bit-reversed 9-bit lookup table
+      int code = 0, idx = 0;
+      for(int l = 1; l <= 9; l++){
+        for(int k = 0; k < count[l]; k++){
+          int rev = 0; for(int b = 0; b < l; b++) if(((code + k) & (1 << b)) != 0) rev |= 1 << (l - 1 - b);
+          for(int i = rev; i < 512; i += 1 << l) fast[i] = (l << 16) | (int)(ushort)symbol[idx + k];
         }
-        // a trailer-shaped run followed by something else: not this member's end, keep scanning
+        idx += count[l]; code = (code + count[l]) << 1;
       }
-      if(pos + n >= len) break;
-      pos += n - 7;
     }
-    Warning = trailerSeen
-      ? "bytes after gzip member " + Members + " are not another gzip member - trailing data was not read"
-      : "gzip member " + Members + " has no matching trailer - the file is truncated or corrupt; lines after that point were not read";
-    return false;
+  }
+  public FgMultiGz(string path){
+    if(TAB == null){
+      TAB = new uint[256]; for(uint i = 0; i < 256; i++){ uint c = i; for(int k = 0; k < 8; k++) c = (c & 1) != 0 ? 0xEDB88320 ^ (c >> 1) : c >> 1; TAB[i] = c; }
+      short[] l = new short[320]; int s = 0;
+      for(; s < 144; s++) l[s] = 8; for(; s < 256; s++) l[s] = 9; for(; s < 280; s++) l[s] = 7; for(; s < 288; s++) l[s] = 8;
+      FIXL = new Huff(l, 0, 288); for(s = 0; s < 30; s++) l[s] = 5; FIXD = new Huff(l, 0, 30);
+    }
+    src = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16);
+    if(!Header(true)) throw new InvalidDataException("not a gzip file");
+  }
+  int NextByte(){ if(ipos == ilen){ if(eof) return -1; ilen = src.Read(ib, 0, ib.Length); ipos = 0; if(ilen <= 0){ ilen = 0; eof = true; return -1; } } return ib[ipos++]; }
+  int Bits(int need){
+    while(bitcnt < need){ int b = NextByte(); if(b < 0) throw new EndOfStreamException("gzip data ends inside member " + Members + " (truncated)"); bitbuf |= (uint)b << bitcnt; bitcnt += 8; }
+    int v = (int)(bitbuf & ((1u << need) - 1)); bitbuf >>= need; bitcnt -= need; return v;
+  }
+  int AlignedByte(){ if(bitcnt >= 8){ int v = (int)(bitbuf & 255); bitbuf >>= 8; bitcnt -= 8; return v; } bitbuf = 0; bitcnt = 0; return NextByte(); }
+  uint U32(){ uint v = 0; for(int i = 0; i < 4; i++) v |= (uint)Need() << (8 * i); return v; }
+  int Need(){ int b = AlignedByte(); if(b < 0) throw new EndOfStreamException("gzip header / trailer of member " + Members + " is truncated"); return b; }
+  int Decode(Huff h){
+    while(bitcnt < 9){ int b = NextByte(); if(b < 0) break; bitbuf |= (uint)b << bitcnt; bitcnt += 8; }
+    if(bitcnt >= 9){ int e = h.fast[bitbuf & 511]; if(e != 0){ int l = e >> 16; bitbuf >>= l; bitcnt -= l; return e & 0xFFFF; } }
+    int code = 0, first = 0, index = 0;
+    for(int len = 1; len < 16; len++){
+      code |= Bits(1); int cnt = h.count[len];
+      if(code - cnt < first) return h.symbol[index + (code - first)];
+      index += cnt; first += cnt; first <<= 1; code <<= 1;
+    }
+    throw new InvalidDataException("bad deflate code in member " + Members);
+  }
+  /* parse a member header (RFC 1952 2.3): magic, CM=8, flags; skip MTIME/XFL/OS, FEXTRA (length-prefixed), FNAME and
+     FCOMMENT (zero-terminated), FHCRC. first=true: the file must start with one. */
+  bool Header(bool first){
+    int b0 = AlignedByte(); if(b0 < 0){ if(first) throw new InvalidDataException("empty gzip file"); return false; }
+    int b1 = AlignedByte();
+    if(b0 != 0x1f || b1 != 0x8b){
+      if(first) throw new InvalidDataException("not a gzip file");
+      bool zeros = b0 == 0 && b1 <= 0; while(zeros){ int z = AlignedByte(); if(z < 0) break; if(z != 0) zeros = false; }
+      if(!zeros) Warning = "bytes after gzip member " + Members + " are not another gzip member - trailing data was not read";
+      return false;
+    }
+    if(Need() != 8) throw new InvalidDataException("gzip member " + (Members + 1) + " uses an unknown compression method");
+    int flg = Need(); for(int i = 0; i < 6; i++) Need();
+    if((flg & 4) != 0){ int xlen = Need() | (Need() << 8); for(int i = 0; i < xlen; i++) Need(); }
+    if((flg & 8) != 0) while(Need() != 0){}
+    if((flg & 16) != 0) while(Need() != 0){}
+    if((flg & 2) != 0){ Need(); Need(); }
+    Members++; crc = 0xFFFFFFFF; memberOut = 0; state = 0; lastBlock = false; copyLen = 0; storedLeft = 0;
+    return true;
+  }
+  public override int Read(byte[] dst, int off, int cnt){
+    int n = 0;
+    while(n < cnt){
+      if(copyLen > 0){
+        byte v = win[(wpos - copyDist) & 32767]; dst[off + n++] = v; win[wpos] = v; wpos = (wpos + 1) & 32767; crc = TAB[(crc ^ v) & 0xFF] ^ (crc >> 8); memberOut++; copyLen--; continue;
+      }
+      if(state == 1){
+        int sym = Decode(lencode);
+        if(sym < 256){ byte v = (byte)sym; dst[off + n++] = v; win[wpos] = v; wpos = (wpos + 1) & 32767; crc = TAB[(crc ^ v) & 0xFF] ^ (crc >> 8); memberOut++; }
+        else if(sym == 256) state = 0;
+        else {
+          sym -= 257; if(sym >= 29) throw new InvalidDataException("bad length code in member " + Members);
+          int len = LBASE[sym] + Bits(LEXT[sym]);
+          int ds = Decode(distcode); if(ds >= 30) throw new InvalidDataException("bad distance code in member " + Members);
+          int dist = DBASE[ds] + Bits(DEXT[ds]);
+          if(dist > memberOut) throw new InvalidDataException("distance too far back in member " + Members);
+          copyLen = len; copyDist = dist;
+        }
+        continue;
+      }
+      if(state == 2){
+        if(storedLeft == 0){ state = 0; continue; }
+        byte v = (byte)Need(); dst[off + n++] = v; win[wpos] = v; wpos = (wpos + 1) & 32767; crc = TAB[(crc ^ v) & 0xFF] ^ (crc >> 8); memberOut++; storedLeft--; continue;
+      }
+      if(state == 3) return n;
+      // state 0: the previous block is done - member end, or the next block header
+      if(lastBlock){
+        bitbuf >>= bitcnt & 7; bitcnt -= bitcnt & 7;                       // trailer starts on a byte boundary
+        uint c = U32(), isz = U32();
+        if(c != (crc ^ 0xFFFFFFFF) || isz != (uint)(memberOut & 0xFFFFFFFF)){
+          Warning = "gzip member " + Members + " failed its CRC / length check - the data is corrupt; lines after that point were not read"; state = 3; return n;
+        }
+        if(!Header(false)){ state = 3; return n; }
+        continue;
+      }
+      lastBlock = Bits(1) == 1;
+      int type = Bits(2);
+      if(type == 0){
+        bitbuf >>= bitcnt & 7; bitcnt -= bitcnt & 7;
+        int ln = Need() | (Need() << 8), nl = Need() | (Need() << 8);
+        if(ln != (~nl & 0xFFFF)) throw new InvalidDataException("bad stored block length in member " + Members);
+        storedLeft = ln; state = 2;
+      } else if(type == 1){ lencode = FIXL; distcode = FIXD; state = 1; }
+      else if(type == 2){ Dynamic(); state = 1; }
+      else throw new InvalidDataException("invalid deflate block type in member " + Members);
+    }
+    return n;
+  }
+  void Dynamic(){
+    int nlen = Bits(5) + 257, ndist = Bits(5) + 1, ncode = Bits(4) + 4;
+    if(nlen > 286 || ndist > 30) throw new InvalidDataException("bad dynamic block counts in member " + Members);
+    short[] lengths = new short[320];
+    for(int i = 0; i < ncode; i++) lengths[ORDER[i]] = (short)Bits(3);
+    Huff lc = new Huff(lengths, 0, 19);
+    int idx = 0;
+    while(idx < nlen + ndist){
+      int sym = Decode(lc);
+      if(sym < 16) lengths[idx++] = (short)sym;
+      else {
+        short len = 0;
+        if(sym == 16){ if(idx == 0) throw new InvalidDataException("bad repeat in member " + Members); len = lengths[idx - 1]; sym = 3 + Bits(2); }
+        else if(sym == 17) sym = 3 + Bits(3); else sym = 11 + Bits(7);
+        if(idx + sym > nlen + ndist) throw new InvalidDataException("too many code lengths in member " + Members);
+        while(sym-- > 0) lengths[idx++] = len;
+      }
+    }
+    if(lengths[256] == 0) throw new InvalidDataException("no end-of-block code in member " + Members);
+    short[] ll = new short[nlen]; Array.Copy(lengths, 0, ll, 0, nlen);
+    short[] dl = new short[ndist]; Array.Copy(lengths, nlen, dl, 0, ndist);
+    lencode = new Huff(ll, 0, nlen); distcode = new Huff(dl, 0, ndist);
   }
   public override bool CanRead { get { return true; } }
   public override bool CanSeek { get { return false; } }
@@ -433,7 +544,7 @@ public class FgMultiGz : Stream {
   public override long Seek(long o, SeekOrigin s){ throw new NotSupportedException(); }
   public override void SetLength(long v){ throw new NotSupportedException(); }
   public override void Write(byte[] b, int o, int c){ throw new NotSupportedException(); }
-  protected override void Dispose(bool disposing){ if(disposing){ if(gz != null) gz.Dispose(); if(fs != null) fs.Dispose(); } base.Dispose(disposing); }
+  protected override void Dispose(bool disposing){ if(disposing && src != null) src.Dispose(); base.Dispose(disposing); }
 }
 
 public class FgFile { public string Path, Rel, Status = "", Note = ""; public bool Read; }
@@ -453,6 +564,22 @@ public static class FgEngine {
   static long LINES = 0, PARSED = 0, SKIPPED = 0, OUTWIN = 0, ROLEFALLBACK = 0;
   static long AVB = 0, AVA = 0, AVU = 0, WEBB = 0, WEBA_ = 0, WEBU = 0, APPB = 0, APPA_ = 0, APPU = 0, IPSHB = 0, IPSHA = 0, IPSHU = 0, CFGRISKY = 0;
   static string CURFILE = "", CURKEY = "";
+  public static string CurLocal = "";
+  /* the device's local wall clock for the current line: FortiOS writes date= / time= in the firewall's own local time
+     and tz= is that clock's offset. Kept per line (the offset can change mid-run, e.g. daylight saving). Without date/time
+     it is rebuilt from eventtime + tz; with neither it is unknown (""), never assumed UTC. */
+  static string DeviceLocal(long ms){
+    string d = G("date"), t = G("time"), tz = G("tz");
+    if(d.Length >= 8 && t.Length >= 5){
+      string[] tp = t.Split(':'); string tt = t;
+      if(tp.Length == 3) tt = tp[0].PadLeft(2, '0') + ":" + tp[1].PadLeft(2, '0') + ":" + tp[2].PadLeft(2, '0');
+      return d.Replace('/', '-') + " " + tt + (tz.Length > 0 ? " " + tz : "");
+    }
+    if(tz.Length == 5 && ms > 0){
+      int hh, mm; if(int.TryParse(tz.Substring(1, 2), out hh) && int.TryParse(tz.Substring(3, 2), out mm)){ long off = (hh * 60 + mm) * 60000L * (tz[0] == '-' ? -1 : 1); return Ts(ms + off) + " " + tz; }
+    }
+    return "";
+  }
 
   static FgAgg Get(Dictionary<string,FgAgg> m, string k){ FgAgg a; if(!m.TryGetValue(k, out a)){ a = new FgAgg(); m[k] = a; } return a; }
   static string G(string k){ string v; if(D.TryGetValue(k, out v)){ if(v == "N/A" || v == "n/a") return ""; return v; } return ""; }
@@ -933,6 +1060,7 @@ public static class FgEngine {
             long ms = TimeMs();
             if((FROMMS > 0 && ms > 0 && ms < FROMMS) || (TOMS > 0 && ms > TOMS)){ OUTWIN++; fa.C[3]++; continue; }
             PARSED++;
+            CurLocal = DeviceLocal(ms);
             OnLine(line, ms);
             if((fl & 32767) == 0 && progress.Length > 0 && (DateTime.UtcNow - lastProg).TotalSeconds > 1){
               lastProg = DateTime.UtcNow;
@@ -1198,7 +1326,7 @@ function bootLog(msg){
 window.onerror=function(msg,url,line){ bootLog("ONERROR line "+line+": "+msg); return false; };
 bootLog("script top-level reached");
 
-var APP_VERSION = "0.2.4";
+var APP_VERSION = "0.2.5";
 var APP_NAME = "FortiGate-Log-Analyzer";
 var MAXROWS = 6000;
 var DATA = null;                 // the loaded engine JSON
@@ -1546,6 +1674,7 @@ function loadJson(path){
   /* the engine records devname= values and hostname-setting events in the devices table - offer them if they differ */
   var dt=TABLES.devices; if(dt){ for(var di=0;di<dt.rows.length;di++){ var dn=dt.rows[di][dt.ix["DevName"]]; if(dn){ hostHint(dn, String(dt.rows[di][dt.ix["DevID"]]).indexOf("hostname setting")>=0?"hostname setting event":"devname="); break; } } }
   computeFlags(); buildFindings(); DEVTZMIN=null; computePivotCounts();
+  try{ $("fCtry").setAttribute("data-t",""); }catch(e){}   // new run: the country list must be rebuilt from ITS rows
   $("srcpill").innerHTML=esc(obj.host)+" &middot; "+nf(obj.parsed)+" lines"; $("srcpill").title=obj.input;
   showEl("results",true);
   if(!SUB) SUB="";
@@ -2010,11 +2139,31 @@ function thruOf(t,r){
 }
 function ctryCol(t){ return t.ix["Country"]!=null?t.ix["Country"]:(t.ix["SrcCountry"]!=null?t.ix["SrcCountry"]:null); }
 function byteCols(t){ var o=[]; for(var c=0;c<t.cols.length;c++) if(BYTECOL_RE.test(t.cols[c]) && t.rows.length && typeof t.rows[0][c]==="number") o.push(c); return o; }
-function devTzMin(){ if(DEVTZMIN!=null) return DEVTZMIN; DEVTZMIN=0; var d=TABLES.devices;
-  if(d){ for(var i=0;i<d.rows.length;i++){ var z=String(v(d,d.rows[i],"TZ")).replace(/^'/,"").split(",")[0]; var m=/^([+-])(\d{2})(\d{2})$/.exec(trimStr(z)); if(m){ DEVTZMIN=(m[1]==="-"?-1:1)*((+m[2])*60+(+m[3])); break; } } }
-  return DEVTZMIN; }
-function tzLabel(){ var m=devTzMin(), a=Math.abs(m); return "UTC"+(m<0?"-":"+")+(a/60<10?"0":"")+Math.floor(a/60)+":"+(a%60<10?"0":"")+(a%60); }
-function isOffHours(ts){ var ms=msOf(ts); if(!ms) return false; var d=new Date(ms+devTzMin()*60000), h=d.getUTCHours(), wd=d.getUTCDay(); return wd===0||wd===6||h<7||h>=19; }
+/* Off-hours is judged on the FIREWALL's own local clock, per event. Runs from v0.2.5 carry Local_Device on every event
+   row (the date= / time= the device logged, plus its tz=), so a run that spans an offset change (daylight saving) is
+   right for every row. Older runs only have the devices table: its offset is used ONLY when exactly one offset was
+   ever observed - otherwise local time is unknown. Rows with no local time are never guessed (no UTC fallback);
+   they are left out of the off-hours view and counted. */
+var OFFUNK=0;
+function devTzMin(){ if(DEVTZMIN!=null) return DEVTZMIN===false?null:DEVTZMIN; var d=TABLES.devices, seen={}, one=null, k=0;
+  if(d){ for(var i=0;i<d.rows.length;i++){ var zs=String(v(d,d.rows[i],"TZ")).replace(/^'/,"").split(/,\s*/);
+    for(var j=0;j<zs.length;j++){ var m=/^([+-])(\d{2})(\d{2})$/.exec(trimStr(zs[j])); if(m && !seen["#"+zs[j]]){ seen["#"+zs[j]]=1; k++; one=(m[1]==="-"?-1:1)*((+m[2])*60+(+m[3])); } } } }
+  DEVTZMIN=(k===1)?one:false; return k===1?one:null; }
+function localParts(t,r){   // -> {wd, h, tz} on the device clock, or null when unknown
+  var li=t.ix["Local_Device"];
+  if(li!=null){ var m=/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::\d{2})?(?: ([+-]\d{4}))?/.exec(String(r[li]||"")); if(!m) return null;
+    var d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5])); return {wd:d.getUTCDay(), h:+m[4], tz:m[6]||""}; }
+  var off=devTzMin(), ti=t.ix["Time_UTC"]; if(off==null || ti==null) return null;
+  var ms=msOf(r[ti]); if(!ms) return null; var d2=new Date(ms+off*60000); return {wd:d2.getUTCDay(), h:d2.getUTCHours(), tz:"run tz"};
+}
+function offOf(t,r){ var p=localParts(t,r); if(!p) return null; return p.wd===0||p.wd===6||p.h<7||p.h>=19; }
+function offApplies(t){ return t.ix["Local_Device"]!=null || (t.ix["Time_UTC"]!=null && devTzMin()!=null); }
+function tzLabel(t){   // the offsets this table's rows carry, for the button
+  var li=t.ix["Local_Device"];
+  if(li==null){ var m=devTzMin(); if(m==null) return "tz unknown"; var a=Math.abs(m); return "UTC"+(m<0?"-":"+")+(a/60<10?"0":"")+Math.floor(a/60)+":"+(a%60<10?"0":"")+(a%60); }
+  var seen={}, list=[], none=0; for(var i=0;i<t.rows.length && list.length<4;i++){ var z=(/ ([+-]\d{4})$/.exec(String(t.rows[i][li]||""))||[])[1]; if(z){ if(!seen[z]){ seen[z]=1; list.push(z); } } else none++; }
+  return list.length?("device clock "+list.join(" / ")+(none?" + tz not logged":"")):"device clock, tz not logged";
+}
 
 function setSev(x){ SEVF=x; $("fAll").className="btn sm"+(x==="all"?" on":""); $("fFlag").className="btn sm"+(x==="flag"?" on":""); $("fHigh").className="btn sm"+(x==="high"?" on":""); }
 function setPivot(val){ PIVOT=trimStr(val); PIVOTM=makePivot(PIVOT); computePivotCounts(); var tot=0; for(var k in PIVOTCNT) if(PIVOTCNT.hasOwnProperty(k) && !/^ioc_view$/.test(k)) tot+=PIVOTCNT[k];
@@ -2023,7 +2172,7 @@ function viewRows(t){
   var out=[], fromMs=DFROM?msOf(String(DFROM).replace(/(\d{4})(\d{2})(\d{2})/,"$1-$2-$3")+" 00:00:00"):0,
       toMs=DTO?msOf(String(DTO).replace(/(\d{4})(\d{2})(\d{2})/,"$1-$2-$3")+" 23:59:59"):0;
   var ft=t.ix["First_UTC"], lt=t.ix["Last_UTC"], tt=t.ix["Time_UTC"];
-  var who=PUBONLY?whoCols(t):null, cc=CTRY?ctryCol(t):null, bc=MINBYTES?byteCols(t):null;
+  var who=PUBONLY?whoCols(t):null, cc=CTRY?ctryCol(t):null, bc=MINBYTES?byteCols(t):null, offOk=OFFHRS&&offApplies(t); OFFUNK=0;
   for(var i=0;i<t.rows.length;i++){ var r=t.rows[i], fl=t.flags[i];
     if(SEVF==="flag" && (!fl || fl.s<2)) continue;
     if(SEVF==="high" && (!fl || fl.s<3)) continue;
@@ -2034,7 +2183,7 @@ function viewRows(t){
     if(PIVOTM && !PIVOTM.test(rowLow(t,i))) continue;
     if(who && who.length){ var pub=false; for(var w=0;w<who.length && !pub;w++) if(isPublicIp(r[who[w]])) pub=true; if(!pub) continue; }
     if(THRU){ var th=thruOf(t,r); if(th===false) continue; }
-    if(OFFHRS && tt!=null && !isOffHours(r[tt])) continue;
+    if(OFFHRS && offOk){ var oh=offOf(t,r); if(oh===null){ OFFUNK++; continue; } if(!oh) continue; }
     if(cc!=null && String(r[cc])!==CTRY) continue;
     if(bc && bc.length){ var big=false; for(var bx=0;bx<bc.length && !big;bx++) if((+r[bc[bx]]||0)>=MINBYTES) big=true; if(!big) continue; }
     if(QUERY){ var txt=rowLow(t,i); if(fl) for(var k=0;k<fl.t.length;k++) txt+=" "+fl.t[k][1].toLowerCase(); if(txt.indexOf(QUERY)<0) continue; }
@@ -2079,7 +2228,7 @@ function renderTable(){
   $("tbl").innerHTML=h+"</tbody>";
   window.__viewIdx=idx;
   var capNote=(t.total>t.rows.length)?(' <span class="maxwarn" title="'+esc("This table has "+nf(t.total)+" rows; the run JSON carries a "+nf(t.rows.length)+"-row preview. "+(t.prioTotal?("The engine keeps priority rows first ("+nf(t.prioTotal)+" in the full table"+(t.prioTotal>t.rows.length?", more than fit":"")+"), then the most significant / newest of the rest. "):"")+"Flags and counts on this screen cover the preview only. Open full CSV has every row.")+'">&#9888; preview: '+nf(t.rows.length)+' of '+nf(t.total)+' rows</span>'):"";
-  $("count").innerHTML=nf(idx.length)+" of "+nf(t.rows.length)+" rows"+(t.nflag?(" &middot; "+nf(t.nflag)+" flagged"):"")+maxRowsWarn(lim, idx.length)+capNote;
+  $("count").innerHTML=nf(idx.length)+" of "+nf(t.rows.length)+" rows"+(t.nflag?(" &middot; "+nf(t.nflag)+" flagged"):"")+(OFFHRS&&OFFUNK?(' <span class="maxwarn" title="'+esc("These rows carry no device local time (the log line had no date / time and no tz), so they cannot be classified as business hours or off-hours. They are left out of the off-hours view, not guessed.")+'">'+nf(OFFUNK)+' without device local time</span>'):"")+maxRowsWarn(lim, idx.length)+capNote;
   var ths=$("tbl").getElementsByTagName("th");
   for(var j=0;j<ths.length;j++){ ths[j].onclick=function(e){ e=e||window.event; var tg=e.target||e.srcElement; if(tg && /\bcgrip\b/.test(tg.className+"")) return;
     var k=parseInt(this.getAttribute("data-k"),10), cur=SORTS[SUB]||{}; var num=(k===-2)||(TABLES[SUB].rows.length && typeof TABLES[SUB].rows[0][k]==="number");
@@ -2087,17 +2236,18 @@ function renderTable(){
   setupColResize(); applyFreeze();
 }
 function syncFilters(t){
-  var who=whoCols(t).length>0, thru=(t.rows.length?thruOf(t,t.rows[0]):null)!==null, off=t.ix["Time_UTC"]!=null, cc=ctryCol(t), bc=byteCols(t).length>0;
+  var who=whoCols(t).length>0, thru=(t.rows.length?thruOf(t,t.rows[0]):null)!==null, off=offApplies(t), cc=ctryCol(t), bc=byteCols(t).length>0;
   showEl("ctryWrap",cc!=null); showEl("bytesWrap",bc);
   $("fPub").className="btn sm"+(PUBONLY?" on":"")+(who?"":" hide"); $("fThru").className="btn sm"+(THRU?" on":"")+(thru?"":" hide"); $("fOff").className="btn sm"+(OFFHRS?" on":"")+(off?"":" hide");
-  if(off) $("fOff").innerHTML="Off-hours only <span class=\"cnt\">"+esc(tzLabel())+"</span>";
+  if(off) $("fOff").innerHTML="Off-hours only <span class=\"cnt\">"+esc(tzLabel(t))+"</span>";
   if(cc!=null && $("fCtry").getAttribute("data-t")!==t.name){   // rebuild the country list for this table
     var m={}, list=[], i; for(i=0;i<t.rows.length;i++){ var cv=String(t.rows[i][cc]||""); if(cv) m["#"+cv]=(m["#"+cv]||0)+1; }
     for(var k in m) if(m.hasOwnProperty(k)) list.push([k.substring(1),m[k]]); list.sort(function(a,b){ return b[1]-a[1]; });
     var sel=$("fCtry"); sel.innerHTML=""; var o0=document.createElement("option"); o0.value=""; o0.text="all countries ("+list.length+")"; sel.add(o0);
     var has=false; for(i=0;i<list.length;i++){ var o=document.createElement("option"); o.value=list[i][0]; o.text=list[i][0]+" ("+nf(list[i][1])+")"; sel.add(o); if(list[i][0]===CTRY) has=true; }
-    if(!has) CTRY=""; sel.value=CTRY; sel.setAttribute("data-t",t.name); }
+    if(!has) CTRY=""; sel.setAttribute("data-t",t.name); }
   if(cc==null) CTRY="";
+  try{ $("fCtry").value=CTRY; }catch(e){}   // the visible selection always matches the filter actually applied (incl. after clear all)
 }
 function applyFreeze(){ var sc=$("tblScroll"); if(!sc) return; var ths=$("tbl").getElementsByTagName("th"), y=sc.scrollTop; for(var i=0;i<ths.length;i++) ths[i].style.top=y+"px"; }
 
@@ -2402,7 +2552,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Pivot</b> - one indicator followed across every tab: an IP, a CIDR range (<code>198.51.100.0/24</code>), a user or a host / domain, whole-token. Every tab and sub-tab button shows how many rows match (&#9670;), Overview lists them, and the filter stays on as you move. Click an IP in the row detail to pivot on it.</li>
       <li><b>Internet IPs only</b> - rows whose SrcIP / DstIP / RemoteIP / Src is a public address (by address class).</li>
       <li><b>Allowed / succeeded only</b> - what got through: accepted sessions, successful logins, tunnels up, allowed security-profile events.</li>
-      <li><b>Off-hours only</b> - event rows outside 07:00-19:00 or at the weekend, in the firewall's own timezone (shown on the button).</li>
+      <li><b>Off-hours only</b> - event rows outside 07:00-19:00 or at the weekend on the firewall's own clock: each row is judged on the local date / time the firewall logged for it (Local_Device column), so daylight-saving changes are handled; rows with no logged local time are left out and counted, never guessed.</li>
       <li><b>Country</b> (tables with a Country column) and <b>volume</b> (tables with byte columns: &ge; 10 MB / 100 MB / 1 GB).</li>
       <li>Filters appear only on tables they apply to; <b>clear all</b> resets every one. Export view and Copy for case notes take exactly the rows on screen.</li>
     </ul>
