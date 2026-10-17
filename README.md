@@ -1,4 +1,4 @@
-# FortiGate Log Triage
+# FortiGate Log Analyzer
 
 A single-file Windows GUI (HTA) for triaging **FortiGate / FortiOS logs exactly as they come off the appliance** - the Log & Report "Download" files from the GUI, syslog captures, or FortiAnalyzer raw exports (key=value lines, plain or `.gz`). Point it at a folder of mixed log types and it answers the questions an incident responder asks of a firewall:
 
@@ -20,11 +20,11 @@ The `.hta` is the launcher and the viewer. A PowerShell engine is embedded in it
 | `<stamp>_<table>.csv` | Every table in full (Open full CSV in the viewer) |
 | `runinfo.json` | Family provenance entry (app, host, input, files, triage summary) |
 
-Output goes to `_Processed\<host>\FortiGate-Log-Triage\` next to the app. Flag rules and findings live in the viewer, so they can change without reprocessing.
+Output goes to `_Processed\<host>\FortiGate-Log-Analyzer\` next to the app. Flag rules and findings live in the viewer, so they can change without reprocessing.
 
 ## Quick start
 
-1. Download `FortiGate-Log-Triage.hta` from the latest release (right-click > Properties > Unblock if Windows marks it).
+1. Download `FortiGate-Log-Analyzer.hta` from the latest release (right-click > Properties > Unblock if Windows marks it).
 2. Run it, pick the folder of exported logs (every file is sniffed; non-FortiGate files are skipped) or one log file.
 3. Check **Target hostname** (filled from `devname=` when the logs carry it), then **Process -> analyze**.
 4. Start on **Overview**: the findings list is generated from every table - click a finding to open the table behind it.
@@ -41,7 +41,7 @@ Output goes to `_Processed\<host>\FortiGate-Log-Triage\` next to the app. Flag r
 ## Command line
 
 ```
-mshta "FortiGate-Log-Triage.hta" "<input>" ["<outDir>"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]
+mshta "FortiGate-Log-Analyzer.hta" "<input>" ["<outDir>"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]
 ```
 
 `<input>` is a log folder or file (processed with `/auto`), a run `.json`, or an output folder (reloads its newest run). `/from` / `/to` set the case window: it filters the views and is recorded in runinfo, never scores.

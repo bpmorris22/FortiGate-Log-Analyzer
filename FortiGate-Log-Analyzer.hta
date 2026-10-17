@@ -3,10 +3,10 @@
 <head>
 <meta http-equiv="x-ua-compatible" content="IE=edge">
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-<title>FortiGate Log Triage</title>
+<title>FortiGate Log Analyzer</title>
 <HTA:APPLICATION
   ID="fgHta"
-  APPLICATIONNAME="FortiGate Log Triage"
+  APPLICATIONNAME="FortiGate Log Analyzer"
   BORDER="thick"
   CAPTION="yes"
   SCROLL="auto"
@@ -18,7 +18,7 @@
   CONTEXTMENU="yes"
   SELECTION="yes" />
 <!--
-  FortiGate-Log-Triage - FortiGate / FortiOS log triage for the DFIR toolkit (github.com/bpmorris22/FortiGate-Log-Triage-Tool).
+  FortiGate-Log-Analyzer - FortiGate / FortiOS log triage for the DFIR toolkit (github.com/bpmorris22/FortiGate-Log-Analyzer).
   Reads FortiOS key=value logs exactly as they come off the appliance (GUI Log & Report "Download" .log files,
   syslog captures, FortiAnalyzer raw exports; plain or .gz) - one folder of mixed log types or single files.
 
@@ -119,12 +119,12 @@
 </head>
 <body>
 <header>
-  <h1>FortiGate Log Triage <small>- FortiOS appliance logs: admin access, config, VPN, traffic, security profiles</small></h1>
+  <h1>FortiGate Log Analyzer <small>- FortiOS appliance logs: admin access, config, VPN, traffic, security profiles</small></h1>
   <span class="pill" id="apppill" title="This app's version">app: checking&hellip;</span>
   <span class="pill" id="srcpill">no data loaded</span>
   <span style="float:right">
     <span class="pill" id="procTimer" title="Processing time. Starts when a run begins and stops when the engine finishes." style="min-width:150px;text-align:center;display:inline-block">Idle</span>
-    <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest FortiGate Log Triage manual from GitHub and open it in your browser">Instructions</button>
+    <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest FortiGate Log Analyzer manual from GitHub and open it in your browser">Instructions</button>
     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
     <button class="btn primary hide" id="selfUpd" onclick="doSelfUpdate()" title="A newer version is available on GitHub">Update</button>
     <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
@@ -136,14 +136,14 @@
 
   <!-- CONTROL PANEL -->
   <div class="card">
-    <h3>FortiGate Log Triage control panel</h3>
+    <h3>FortiGate Log Analyzer control panel</h3>
     <label class="fld" title="A folder of FortiGate logs (searched recursively; every file whose first 8 KB holds FortiOS key=value lines is read - .log, .txt, no extension, .gz), or one log file. Several paths can be separated with |.">Input - a folder of FortiGate log exports, or one log file (.log / .txt / .gz, key=value format)</label>
     <input class="txt wide" id="inPath" value="">
     <input type="file" id="inPick" style="display:none">
     <button class="btn" id="browseBtn">Folder&hellip;</button>
     <button class="btn" id="browseFileBtn">File&hellip;</button>
     <span class="muted" id="inInfo" style="font-size:11px;margin-left:6px"></span>
-    <label class="fld" title="Required before processing. Filled from the logs' devname= field when they carry one (GUI downloads usually do not) - otherwise type the firewall's name.">Target hostname (required) - the firewall's name; names the output folder _Processed\&lt;host&gt;\FortiGate-Log-Triage next to this app</label>
+    <label class="fld" title="Required before processing. Filled from the logs' devname= field when they carry one (GUI downloads usually do not) - otherwise type the firewall's name.">Target hostname (required) - the firewall's name; names the output folder _Processed\&lt;host&gt;\FortiGate-Log-Analyzer next to this app</label>
     <input class="txt" id="hostName" value="" style="width:260px" placeholder="e.g. FGT-EDGE-01">
     <span id="hostHint" class="maxwarn hide"></span>
     <label class="fld">Output directory</label>
@@ -219,14 +219,14 @@
 </div>
 
 <script type="text/plain" id="ps1Payload">
-# FortiGate-Engine.ps1 - streaming aggregator for FortiGate key=value logs (FortiGate Log Triage).
+# FortiGate-Engine.ps1 - streaming aggregator for FortiGate key=value logs (FortiGate Log Analyzer).
 # Reads FortiOS logs as they come off the appliance (GUI "Download" .log, syslog capture, FortiAnalyzer raw
 # export; plain or .gz), one pass, and writes:
 #   <OutDir>\<Host>-FortiGate-<Stamp>.json   capped tables (6000 rows each) for the HTA viewer
 #   <OutDir>\<Stamp>_<table>.csv             every table in full
 # The parse/aggregate core is C# (Add-Type): a GB of logs is ~1.3M lines and per-line PowerShell is too slow.
 # Times: eventtime (s / ms / us / ns epoch, all UTC) wins; date+time+tz is the fallback.
-# NB this file is embedded verbatim in FortiGate-Log-Triage.hta - it must never contain a closing script tag.
+# NB this file is embedded verbatim in FortiGate-Log-Analyzer.hta - it must never contain a closing script tag.
 param(
   [Parameter(Mandatory=$true)][string]$InputPath,     # file or folder; several separated by |
   [Parameter(Mandatory=$true)][string]$OutDir,
@@ -770,7 +770,7 @@ public static class FgEngine {
     }
     string jp = Path.Combine(outDir, San(host) + "-FortiGate-" + stamp + ".json");
     StringBuilder sb = new StringBuilder(1 << 22);
-    sb.Append("{\"app\":\"FortiGate-Log-Triage\",\"appVersion\":").Append(J(appVersion)).Append(",\"host\":").Append(J(host));
+    sb.Append("{\"app\":\"FortiGate-Log-Analyzer\",\"appVersion\":").Append(J(appVersion)).Append(",\"host\":").Append(J(host));
     sb.Append(",\"stamp\":").Append(J(stamp)).Append(",\"input\":").Append(J(input)).Append(",\"generatedUtc\":").Append(J(DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss")));
     sb.Append(",\"elapsedSec\":").Append(((long)(DateTime.UtcNow - t0).TotalSeconds).ToString());
     sb.Append(",\"winFrom\":").Append(J(from)).Append(",\"winTo\":").Append(J(to));
@@ -993,7 +993,7 @@ function bootLog(msg){
     if(!BOOTLOG){ var dir="";
       try{ var lp=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); dir=lp.substring(0,lp.lastIndexOf("\\")); }catch(e0){}
       if(!dir) dir=fso.GetSpecialFolder(2)+"";
-      BOOTLOG=dir+"\\FortiGate-Log-Triage.boot.log";
+      BOOTLOG=dir+"\\FortiGate-Log-Analyzer.boot.log";
       var f0=fso.CreateTextFile(BOOTLOG,true); f0.WriteLine(new Date()+" boot"); f0.Close(); }
     var f=fso.OpenTextFile(BOOTLOG,8,true); f.WriteLine(new Date()+" "+msg); f.Close();
   }catch(e){}
@@ -1001,8 +1001,8 @@ function bootLog(msg){
 window.onerror=function(msg,url,line){ bootLog("ONERROR line "+line+": "+msg); return false; };
 bootLog("script top-level reached");
 
-var APP_VERSION = "0.1.1";
-var APP_NAME = "FortiGate-Log-Triage";
+var APP_VERSION = "0.2.0";
+var APP_NAME = "FortiGate-Log-Analyzer";
 var MAXROWS = 6000;
 var DATA = null;                 // the loaded engine JSON
 var TABLES = {};                 // name -> {cols, rows, total, ix:{col->i}, flags:[{s,t[]}]}
@@ -1328,7 +1328,8 @@ function autoProcess(){ if(!trimStr($("hostName").value)){ setStatus("/auto: no 
 function loadJson(path){
   var t0=new Date().getTime(), obj;
   try{ obj=JSON.parse(readUtf8(path)); }catch(e){ setStatus("Could not read "+path+": "+e.message,"err"); return false; }
-  if(!obj || obj.app!==APP_NAME || !obj.tables){ setStatus("That JSON is not a FortiGate Log Triage run","err"); return false; }
+  /* runs written before the v0.2.0 rename (app "FortiGate-Log-Triage") still load */
+  if(!obj || (obj.app!==APP_NAME && obj.app!=="FortiGate-Log-Triage") || !obj.tables){ setStatus("That JSON is not a FortiGate Log Analyzer run","err"); return false; }
   DATA=obj; JSONPATH=path; if(!LASTOUTDIR) LASTOUTDIR=parentDir(path);
   TABLES={};
   for(var name in obj.tables){ if(!obj.tables.hasOwnProperty(name)) continue; var t=obj.tables[name], ix={};
@@ -1707,7 +1708,7 @@ function copyDetail(){ var t=curTable(); if(!t||DETROW<0) return; var row=t.rows
 
 /* ---------- resizable columns (family) ---------- */
 var COLW={}, DRAG=null, SETTINGS={};
-function settingsPath(){ var d=htaFolder(); return d?(d+"\\FortiGate-Log-Triage.settings.json"):""; }
+function settingsPath(){ var d=htaFolder(); return d?(d+"\\FortiGate-Log-Analyzer.settings.json"):""; }
 function loadSettings(){ try{ var p=settingsPath(); if(p && fileExists(p)){ var o=JSON.parse(readUtf8(p)); if(o && typeof o==="object") SETTINGS=o; } }catch(e){ SETTINGS={}; }
   if(SETTINGS.colw && typeof SETTINGS.colw==="object") COLW=SETTINGS.colw; }
 function saveSettings(){ try{ var p=settingsPath(); if(p) writeUtf8(p, JSON.stringify(SETTINGS)); }catch(e){} }
@@ -1756,7 +1757,7 @@ function copyNotes(){
   try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+Math.min(idx.length,500)+" rows to clipboard"+copyCapNote(idx),"ok"); }catch(e){ setStatus("Copy failed: "+e.message,"err"); }
 }
 function copyFindings(){
-  var out=["FortiGate log triage - "+DATA.host+" ("+nf(DATA.parsed)+" lines)"], SL=["INFO","LOW","MEDIUM","HIGH","CRITICAL"];
+  var out=["FortiGate Log Analyzer - "+DATA.host+" ("+nf(DATA.parsed)+" lines)"], SL=["INFO","LOW","MEDIUM","HIGH","CRITICAL"];
   for(var i=0;i<FINDINGS.length;i++) out.push("["+SL[FINDINGS[i].s]+"] "+FINDINGS[i].t+(FINDINGS[i].d?(" - "+FINDINGS[i].d):""));
   try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Findings copied","ok"); }catch(e){}
 }
@@ -1765,7 +1766,7 @@ function copyFindings(){
 function init(){
   try{ window.resizeTo(1400,940); }catch(e){}
   $("apppill").innerHTML="app v"+APP_VERSION; $("apppill").title="This app v"+APP_VERSION+" - checking GitHub for a newer release\u2026";
-  try{ document.title="FortiGate Log Triage v"+APP_VERSION; }catch(e){}
+  try{ document.title="FortiGate Log Analyzer v"+APP_VERSION; }catch(e){}
   $("tblScroll").onscroll=applyFreeze;
   loadSettings();
   $("hostName").onkeyup=function(){ HOST_TOUCHED=true; HOST_LOCK=false; syncOutDir(); hostHint(LOGHOST.name, LOGHOST.src); };
@@ -1842,19 +1843,19 @@ function init(){
 }
 
 /* ---------- help / instructions ---------- */
-var GITHUB="https://github.com/bpmorris22/FortiGate-Log-Triage-Tool";
+var GITHUB="https://github.com/bpmorris22/FortiGate-Log-Analyzer";
 function openUrl(u){ try{ new ActiveXObject("WScript.Shell").Run('"'+u+'"',1,false); }catch(e){ setStatus("Could not open browser: "+e.message,"err"); } }
 function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION; }catch(e){} showEl("helpModal",true); }
 function closeHelp(){ showEl("helpModal",false); }
-var MANUAL_URL="https://raw.githubusercontent.com/bpmorris22/FortiGate-Log-Triage-Tool/main/docs/FortiGate-Log-Triage-Manual.html";
-var MANUAL_FILE="FortiGate-Log-Triage-Manual.html";
+var MANUAL_URL="https://raw.githubusercontent.com/bpmorris22/FortiGate-Log-Analyzer/main/docs/FortiGate-Log-Analyzer-Manual.html";
+var MANUAL_FILE="FortiGate-Log-Analyzer-Manual.html";
 function openManualFile(path){ try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+path+'"',1,false); return true; } catch(e){ setStatus("Downloaded the manual, but could not open it: "+e.message,"err"); return false; } }
 function openInstructions(){
   var fso=new ActiveXObject("Scripting.FileSystemObject"); var dest=fso.GetSpecialFolder(2)+"\\"+MANUAL_FILE;
-  setStatus("Downloading the FortiGate Log Triage manual from GitHub\u2026","muted");
+  setStatus("Downloading the FortiGate Log Analyzer manual from GitHub\u2026","muted");
   var ps1=fso.GetSpecialFolder(2)+"\\man_"+uid()+".ps1"; var dq=String(dest).replace(/'/g,"''"); var L=[];
   L.push("$ErrorActionPreference='Stop'"); L.push("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12");
-  L.push("Invoke-WebRequest -UseBasicParsing -Uri '"+MANUAL_URL+"' -OutFile '"+dq+"' -Headers @{ 'User-Agent'='FortiGate-Log-Triage' }");
+  L.push("Invoke-WebRequest -UseBasicParsing -Uri '"+MANUAL_URL+"' -OutFile '"+dq+"' -Headers @{ 'User-Agent'='FortiGate-Log-Analyzer' }");
   L.push("if((Get-Item '"+dq+"').Length -lt 2000){ throw 'downloaded file too small' }"); L.push("Write-Output 'MAN_OK'");
   try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); } catch(ew){ setStatus("Could not stage the manual download: "+ew.message,"err"); return; }
   var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']); try{ fso.DeleteFile(ps1); }catch(e0){}
@@ -1912,7 +1913,7 @@ function applyCli(cli){ if(!cli.input) return false;
   return true; }
 
 /* ---------- self-update (family) ---------- */
-var SELF_REPO="bpmorris22/FortiGate-Log-Triage-Tool", SELF_HTA="FortiGate-Log-Triage.hta", SELF_LATEST="", SELF_ASSET_URL="";
+var SELF_REPO="bpmorris22/FortiGate-Log-Analyzer", SELF_HTA="FortiGate-Log-Analyzer.hta", SELF_LATEST="", SELF_ASSET_URL="";
 function selfVerNewer(r,l){ var a=String(r).split("."),b=String(l).split("."),n=Math.max(a.length,b.length); for(var i=0;i<n;i++){ var x=parseInt(a[i],10)||0,y=parseInt(b[i],10)||0; if(x!==y) return x>y; } return false; }
 function selfPath(){ try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); if(/\.hta$/i.test(p) && fileExists(p)) return p; }catch(e){} return (htaFolder()||"")+"\\"+SELF_HTA; }
 function checkSelfUpdate(){
@@ -1950,8 +1951,8 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
 <div id="helpModal" class="modal hide" onclick="if((event.srcElement||{}).id==='helpModal')closeHelp()">
   <div class="mcard">
     <span class="x" onclick="closeHelp()" title="Close">&times;</span>
-    <h2>FortiGate Log Triage <span class="muted" style="font-size:13px;font-weight:400" id="helpVer"></span></h2>
-    <div class="gh muted">GitHub: <span class="lnk" onclick="openUrl(GITHUB)">https://github.com/bpmorris22/FortiGate-Log-Triage-Tool</span></div>
+    <h2>FortiGate Log Analyzer <span class="muted" style="font-size:13px;font-weight:400" id="helpVer"></span></h2>
+    <div class="gh muted">GitHub: <span class="lnk" onclick="openUrl(GITHUB)">https://github.com/bpmorris22/FortiGate-Log-Analyzer</span></div>
     <p>A single-file GUI for <b>FortiGate / FortiOS log triage</b>. It reads the logs exactly as they come off the appliance - the <b>Log &amp; Report "Download"</b> files from the GUI, syslog captures, FortiAnalyzer raw exports (key=value lines; plain or <code>.gz</code>) - and turns a folder of mixed log types into the questions an incident responder asks of a firewall: who logged in to it, what changed, who came in over VPN, what was exposed, what left, and what the security profiles caught.</p>
     <h3>Quick start</h3>
     <ul>
@@ -1978,11 +1979,11 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Coverage gap</b> (Overview): a log type spanning less than half the window of the others - usually the GUI download's row limit. Export busy log types day by day.</li>
     </ul>
     <h3>Command line</h3>
-    <p><code>mshta "FortiGate-Log-Triage.hta" "&lt;input&gt;" ["&lt;outDir&gt;"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]</code></p>
+    <p><code>mshta "FortiGate-Log-Analyzer.hta" "&lt;input&gt;" ["&lt;outDir&gt;"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]</code></p>
     <ul>
       <li><code>&lt;input&gt;</code> - a log folder or file (processed with <code>/auto</code>), a run <code>.json</code>, or an output folder (reloads its newest run).</li>
       <li><code>/from: /to:</code> - case window (UTC, inclusive): prefills the date filter and is recorded in runinfo; it only filters, never scores. The engine skips lines outside it only when you tick "also limit processing".</li>
-      <li>Output goes to <code>_Processed\&lt;host&gt;\FortiGate-Log-Triage</code> next to this app (family convention); a <code>runinfo.json</code> provenance entry with a triage summary is appended per run. An <code>IOC.txt</code> next to the app is merged into the IOC box at launch.</li>
+      <li>Output goes to <code>_Processed\&lt;host&gt;\FortiGate-Log-Analyzer</code> next to this app (family convention); a <code>runinfo.json</code> provenance entry with a triage summary is appended per run. An <code>IOC.txt</code> next to the app is merged into the IOC box at launch.</li>
     </ul>
     <h3>Notes</h3>
     <ul>
