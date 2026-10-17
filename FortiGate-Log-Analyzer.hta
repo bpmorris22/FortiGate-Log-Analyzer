@@ -374,29 +374,39 @@ public class FgMultiGz : Stream {
       if(!Next()) return 0;
     }
   }
-  bool TrailerAt(long end, uint c, uint isz){
-    if(end < 8 || end > len) return false;
-    byte[] b = new byte[8]; fs.Position = end - 8; int got = 0; while(got < 8){ int r = fs.Read(b, got, 8 - got); if(r <= 0) return false; got += r; }
-    return BitConverter.ToUInt32(b, 0) == c && BitConverter.ToUInt32(b, 4) == isz;
-  }
+  /* The decoder over-reads, so the member's compressed end is found from the file itself: scanning forward from the
+     member start, the member ends at the FIRST place where this member's trailer (CRC32 + ISIZE of exactly what was
+     decoded) sits AND is followed by end of file or a new gzip header. Never "trailer matches at EOF, so done": a
+     later member with identical content (A/B/A) has the same trailer, and that shortcut skipped the middle. */
   bool Next(){
     uint c = crc ^ 0xFFFFFFFF, isz = (uint)(outLen & 0xFFFFFFFF);
     gz.Dispose(); gz = null;
-    if(TrailerAt(len, c, isz)) return false;                               // this member ends the file: done
-    // find the next member: a gzip magic whose preceding 8 bytes are this member's trailer
-    long pos = memberStart + 18; byte[] buf = new byte[1 << 20];
-    while(pos < len - 10){
-      fs.Position = pos; int n = fs.Read(buf, 0, buf.Length); if(n < 3) break;
-      for(int i = 0; i + 2 < n; i++){
-        if(buf[i] == 0x1f && buf[i + 1] == 0x8b && buf[i + 2] == 0x08){
-          long q = pos + i;
-          if(TrailerAt(q, c, isz)){ memberStart = q; Start(); return true; }
-          fs.Position = pos + n;   // TrailerAt moved the stream; the buffer is still valid
+    byte c0 = (byte)c, c1 = (byte)(c >> 8), c2 = (byte)(c >> 16), c3 = (byte)(c >> 24);
+    byte s0 = (byte)isz, s1 = (byte)(isz >> 8), s2 = (byte)(isz >> 16), s3 = (byte)(isz >> 24);
+    long pos = memberStart + 12;                              // earliest trailer start: 10-byte header + 2-byte empty deflate
+    byte[] buf = new byte[(1 << 20) + 16];
+    bool trailerSeen = false;
+    while(pos + 8 <= len){
+      fs.Position = pos; int n = fs.Read(buf, 0, buf.Length); if(n < 8) break;
+      int lim = n - 8;                                        // trailer must fit in this buffer; the overlap re-reads the rest
+      for(int i = 0; i <= lim; i++){
+        if(buf[i] != c0 || buf[i + 1] != c1 || buf[i + 2] != c2 || buf[i + 3] != c3 || buf[i + 4] != s0 || buf[i + 5] != s1 || buf[i + 6] != s2 || buf[i + 7] != s3) continue;
+        long end = pos + i + 8; trailerSeen = true;
+        if(end == len) return false;                          // the last member: done
+        if(end + 3 <= len){
+          byte h0, h1, h2;
+          if(i + 10 < n){ h0 = buf[i + 8]; h1 = buf[i + 9]; h2 = buf[i + 10]; }
+          else { byte[] h = new byte[3]; fs.Position = end; fs.Read(h, 0, 3); h0 = h[0]; h1 = h[1]; h2 = h[2]; }
+          if(h0 == 0x1f && h1 == 0x8b && h2 == 0x08){ memberStart = end; Start(); return true; }
         }
+        // a trailer-shaped run followed by something else: not this member's end, keep scanning
       }
-      pos += n - 2;
+      if(pos + n >= len) break;
+      pos += n - 7;
     }
-    Warning = "gzip data after member " + Members + " could not be decoded - the file may be truncated or corrupt; lines after that point were not read";
+    Warning = trailerSeen
+      ? "bytes after gzip member " + Members + " are not another gzip member - trailing data was not read"
+      : "gzip member " + Members + " has no matching trailer - the file is truncated or corrupt; lines after that point were not read";
     return false;
   }
   public override bool CanRead { get { return true; } }
@@ -769,7 +779,8 @@ public static class FgEngine {
     if(sub == "webfilter"){
       string hn = G("hostname"); if(hn.Length == 0) hn = G("url");
       string cat = G("catdesc"); if(cat.Length == 0) cat = G("eventtype");
-      FgAgg a = Get(WEBA, hn + "|" + src); a.Seen(ms); a.S0 = hn; a.S1 = src; a.S2 = cat; if(a.S3.Length == 0) a.S3 = Clip(G("url"), 300);
+      // keyed by category too: the outcome counters on a row must describe exactly the requests in that category
+      FgAgg a = Get(WEBA, hn + "|" + src + "|" + cat); a.Seen(ms); a.S0 = hn; a.S1 = src; a.S2 = cat; if(a.S3.Length == 0) a.S3 = Clip(G("url"), 300);
       a.C[oc]++; a.Add(0, act); a.Add(1, user); a.Add(2, G("dstcountry")); a.Add(3, G("profile")); a.C[4] += L("sentbyte");
       FgAgg c = Get(WEBC, cat + "|" + act); c.Seen(ms); c.S0 = cat; c.S1 = act; c.Add(0, hn); c.Add(1, src);
       if(MALCAT.IsMatch(cat)){ if(oc == 1) WEBB++; else if(oc == 2) WEBA_++; else WEBU++; }
@@ -802,7 +813,7 @@ public static class FgEngine {
       }
       if(p < 0) continue;
       FgAgg a = Get(IOCT, term); a.Seen(ms); a.S0 = term; a.Add(0, cat); a.Add(1, G("srcip")); a.Add(2, G("dstip"));
-      IOCH.Add(true, Ts(ms), term, cat, G("srcip"), G("dstip"), G("dstport"), G("user"), G("action"), CURFILE, Clip(raw, 1500));
+      IOCH.Add(true, Ts(ms), term, cat, G("srcip"), G("dstip"), G("dstport"), G("user"), G("action"), CURFILE, CURKEY, Clip(raw, 1500));
       if(a.N <= 50) AddTl(ms, "ioc", "high", "IOC hit '" + term + "' in " + cat, G("srcip"), G("user"), Clip(G("msg").Length > 0 ? G("msg") : (G("dstip") + ":" + G("dstport") + " " + G("action")), 300));
     }
   }
@@ -828,6 +839,11 @@ public static class FgEngine {
         }
       } else { FgFile f = new FgFile(); f.Path = p; f.Rel = p; f.Status = "FAILED - input not found"; outp.Add(f); Log("WARN input not found: " + p); }
     }
+    /* display labels must be unique across ALL inputs (several selected files / folders can each have an event.log):
+       a label shared by two different files falls back to the full path everywhere it is shown */
+    Dictionary<string,int> seen = new Dictionary<string,int>(StringComparer.OrdinalIgnoreCase);
+    foreach(FgFile f in outp){ int c; seen.TryGetValue(f.Rel, out c); seen[f.Rel] = c + 1; }
+    foreach(FgFile f in outp){ if(seen[f.Rel] > 1) f.Rel = f.Path; }
     outp.Sort(delegate(FgFile a, FgFile b){ return string.Compare(a.Rel, b.Rel, StringComparison.OrdinalIgnoreCase); });
     return outp;
   }
@@ -867,7 +883,7 @@ public static class FgEngine {
     SYSNOT = new FgList("system_notable", outDir, stamp, "Time_UTC", "Subtype", "LogID", "LogDesc", "Level", "User", "UI_Src", "Action", "Message");
     VPNEV = new FgList("vpn_events", outDir, stamp, "Time_UTC", "Kind", "Action", "User", "RemoteIP", "Country", "TunnelIP", "Tunnel", "Reason", "BytesSent", "BytesRcvd", "Message");
     AVL = new FgList("utm_av", outDir, stamp, "Time_UTC", "Outcome", "SrcIP", "DstIP", "Service", "Direction", "FileName", "Virus", "Engine", "Action", "URL", "User", "Country", "Checksum", "Message");
-    IOCH = new FgList("ioc_hits", outDir, stamp, "Time_UTC", "Term", "Category", "SrcIP", "DstIP", "DstPort", "User", "Action", "File", "RawLine");
+    IOCH = new FgList("ioc_hits", outDir, stamp, "Time_UTC", "Term", "Category", "SrcIP", "DstIP", "DstPort", "User", "Action", "File", "Path", "RawLine");
     FgList[] lists = { ADMSESS, CFG, SYSNOT, VPNEV, AVL, IOCH, TL };
     DateTime df;
     if(from.Length > 0 && DateTime.TryParseExact(from, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out df)) FROMMS = (long)(df - new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds;
@@ -1167,7 +1183,7 @@ function bootLog(msg){
 window.onerror=function(msg,url,line){ bootLog("ONERROR line "+line+": "+msg); return false; };
 bootLog("script top-level reached");
 
-var APP_VERSION = "0.2.2";
+var APP_VERSION = "0.2.3";
 var APP_NAME = "FortiGate-Log-Analyzer";
 var MAXROWS = 6000;
 var DATA = null;                 // the loaded engine JSON
@@ -1591,14 +1607,15 @@ var RULES={
     else if(s>=GB) T.push([3,"BULK-UPLOAD"]); else if(s>=MB100) T.push([2,"LARGE-UPLOAD"]); },
   /* UTM outcomes come from the engine's per-record mapping of FortiOS actions (blocked / allowed / unknown - see Help),
      counted per aggregate row, so one blocked request can never hide an allowed one */
-  utm_av:function(t,r,T){ var o=v(t,r,"Outcome"); T.push(o==="allowed"?[3,"MALWARE-ALLOWED"]:(o==="blocked"?[2,"MALWARE-BLOCKED"]:[2,"OUTCOME-UNKNOWN"])); },
-  utm_ips:function(t,r,T){ var s=v(t,r,"Severity"); if(/critical|high/i.test(s)) T.push([3,"IPS-"+s.toUpperCase()]); else if(/medium/i.test(s)) T.push([2,"IPS-MEDIUM"]);
-    if(n(t,r,"Allowed")>0) T.push([2,"NOT-BLOCKED"]); else if(n(t,r,"UnknownOutcome")>0) T.push([1,"OUTCOME-UNKNOWN"]); },
-  utm_app:function(t,r,T){ var cat=v(t,r,"Category");
-    if(RISKY_APPCAT[cat]) T.push(n(t,r,"Allowed")>0?[3,cat.toUpperCase()+"-ALLOWED"]:(n(t,r,"UnknownOutcome")>0?[2,cat.toUpperCase()+"-OUTCOME-UNKNOWN"]:[2,cat.toUpperCase()]));
+  utm_av:function(t,r,T){ var o=(t.ix["Outcome"]!=null)?v(t,r,"Outcome"):outcomeName(OUTCOME_MAP[String(v(t,r,"Action")).toLowerCase()]||0);
+    T.push(o==="allowed"?[3,"MALWARE-ALLOWED"]:(o==="blocked"?[2,"MALWARE-BLOCKED"]:[2,"OUTCOME-UNKNOWN"])); },
+  utm_ips:function(t,r,T){ var s=v(t,r,"Severity"), oc=outc3(t,r); if(/critical|high/i.test(s)) T.push([3,"IPS-"+s.toUpperCase()]); else if(/medium/i.test(s)) T.push([2,"IPS-MEDIUM"]);
+    if(oc.a>0) T.push([2,"NOT-BLOCKED"]); else if(oc.u>0) T.push([1,"OUTCOME-UNKNOWN"]); },
+  utm_app:function(t,r,T){ var cat=v(t,r,"Category"), oc=outc3(t,r);
+    if(RISKY_APPCAT[cat]) T.push(oc.a>0?[3,cat.toUpperCase()+"-ALLOWED"]:(oc.u>0?[2,cat.toUpperCase()+"-OUTCOME-UNKNOWN"]:[2,cat.toUpperCase()]));
     if(/critical/i.test(v(t,r,"Risk"))) T.push([1,"CRITICAL-RISK"]); },
-  utm_web:function(t,r,T){ if(!MAL_CAT_RE.test(v(t,r,"Category"))) return;
-    T.push(n(t,r,"Allowed")>0?[3,"BAD-CATEGORY-ALLOWED"]:(n(t,r,"UnknownOutcome")>0?[2,"BAD-CATEGORY-OUTCOME-UNKNOWN"]:[2,"BAD-CATEGORY-BLOCKED"])); },
+  utm_web:function(t,r,T){ if(!MAL_CAT_RE.test(v(t,r,"Category"))) return; var oc=outc3(t,r);
+    T.push(oc.a>0?[3,"BAD-CATEGORY-ALLOWED"]:(oc.u>0?[2,"BAD-CATEGORY-OUTCOME-UNKNOWN"]:[2,"BAD-CATEGORY-BLOCKED"])); },
   utm_web_categories:function(t,r,T){ if(MAL_CAT_RE.test(v(t,r,"Category"))) T.push([2,"BAD-CATEGORY"]); },
   utm_other:function(t,r,T){ if(/anomaly|dlp/i.test(v(t,r,"Type"))) T.push([2,"ANOMALY"]); if(MAL_CAT_RE.test(v(t,r,"Category_Severity"))) T.push([2,"BAD-CATEGORY"]); },
   ioc_terms:function(t,r,T){ T.push([3,"IOC"]); },
@@ -1606,6 +1623,21 @@ var RULES={
   ioc_view:function(t,r,T){ T.push([3,"IOC"]); },
   timeline:function(t,r,T){ var s=v(t,r,"Severity"); if(s==="high") T.push([3,v(t,r,"Category").toUpperCase()]); else if(s==="med") T.push([2,v(t,r,"Category").toUpperCase()]); }
 };
+/* outcome mapping - the same table as the engine's Outcome(): 1 blocked, 2 allowed, anything else unknown */
+var OUTCOME_MAP={"blocked":1,"block":1,"deny":1,"denied":1,"dropped":1,"drop":1,"drop_session":1,"reset":1,"reset_client":1,"reset_server":1,
+  "clear_session":1,"attachment-removed":1,"removed":1,"quarantined":1,"quarantine":1,"replaced":1,
+  "pass":2,"passthrough":2,"pass_session":2,"monitored":2,"monitor":2,"allow":2,"allowed":2,"accept":2,"detected":2,"exempt":2,"log":2,"logged":2};
+function outcomeName(o){ return o===1?"blocked":(o===2?"allowed":"unknown"); }
+/* per-row outcome counts. Runs from v0.2.1+ carry Blocked / Allowed / UnknownOutcome columns. Older runs (still loadable)
+   only have the distinct action list: each listed action counts as present (1), so an allowed action anywhere in the
+   list is never read as "blocked" - a missing column is never evidence of blocking. */
+function outc3(t,r){
+  if(t.ix["Allowed"]!=null) return {b:n(t,r,"Blocked"), a:n(t,r,"Allowed"), u:n(t,r,"UnknownOutcome"), legacy:false};
+  var acts=String(v(t,r,"Actions")||v(t,r,"Action")||"").split(/,\s*/), o={b:0,a:0,u:0,legacy:true};
+  for(var i=0;i<acts.length;i++){ var k=acts[i].replace(/^\s+|\s+$/g,"").toLowerCase(); if(!k||k==="...") continue; var m=OUTCOME_MAP[k]; if(m===1) o.b++; else if(m===2) o.a++; else o.u++; }
+  if(!o.a && !o.b && !o.u) o.u=1;   // no action recorded at all: unknown, not blocked
+  return o;
+}
 var SSL_HOME="";
 function isPublicIp(ip){
   ip=String(ip||""); if(ip.indexOf(":")>=0) return !/^(::1|fe80|fc|fd|ff)/i.test(ip);
@@ -1654,6 +1686,7 @@ function buildFindings(){
   if(DATA.filesFailed || DATA.filesPartial){ var bf=[]; t=tbl("files");
     for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=3) bf.push(v(t,t.rows[i],"File")+" ("+v(t,t.rows[i],"Status")+")"); }
     addF(4,"Input incomplete: "+nf(DATA.filesFailed||0)+" file(s) could not be read, "+nf(DATA.filesPartial||0)+" read only partially - every table below is missing their lines",topList(bf,6)+". Sources > Files has the error for each. Fix or re-export those files and process again before relying on absence of evidence.","src","files",""); }
+  if(!DATA.stats) addF(0,"This run was written by an older version ("+(DATA.appVersion||"?")+") - outcome totals, priority previews and input-completeness checks are not in it","Security-profile outcomes are read from each row's action list instead (an allowed action anywhere on a row counts as allowed). Re-process the logs with this version for exact, full-data results.","src","files","");
   if(DATA.stats && DATA.stats.roleFallbackSessions)
     addF(0,nf(DATA.stats.roleFallbackSessions)+" traffic sessions had no usable interface role - direction (Internet vs internal) was taken from the address class","FortiOS marks some interfaces (IPsec tunnels, loopbacks, zones) with role 'undefined'. VPN sessions are treated as internal; for the rest, public addresses count as Internet. If the site uses public address space internally, read the Traffic tables with that in mind.","trf","traffic_services","");
   /* coverage gaps: a log type that spans far less than the overall window is usually an export row cap */
@@ -1719,15 +1752,18 @@ function buildFindings(){
   t=tbl("utm_av"); var av=stat3("av");
   if(av.has && av.a+av.b+av.u) addF(av.a?3:(av.u?2:2),"Antivirus: "+nf(av.a+av.b+av.u)+" detection"+(av.a+av.b+av.u===1?"":"s")+" - "+outc(av),
     (av.a?"Detections the firewall let through (monitor / passthrough) mean the file reached the host - check it. ":"")+"Detected files, the internal host involved and the source are on Security profiles > Antivirus (allowed and unknown-outcome rows are always kept in the preview)."+part(t),"utm","utm_av","");
-  else if(t.total) addF(2,"Antivirus: "+nf(t.total)+" detection"+(t.total===1?"":"s"),"Outcome totals are not in this run (processed by an older version)."+part(t),"utm","utm_av","");
+  else if(t.total){ var avL=0; for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=3) avL++; }
+    addF(avL?3:2,"Antivirus: "+nf(t.total)+" detection"+(t.total===1?"":"s")+(avL?(" - "+avL+" allowed (from the Action column)"):""),"This run predates full-data outcome counts - outcomes are read from each row's action. Re-process for exact totals."+part(t),"utm","utm_av",""); }
   t=tbl("utm_ips"); var ips=stat3("ipsHigh");
   if(t.nflag) addF(3,"IPS: "+nf(t.nflag)+" high / critical or unblocked signature groups"+(ips.has&&(ips.a+ips.b+ips.u)?(" - high/critical events: "+outc(ips)):""),part(t),"utm","utm_ips","");
   t=tbl("utm_app"); var ra={}, aps=stat3("appRisky");
   for(i=0;i<t.rows.length;i++){ r=t.rows[i]; if(RISKY_APPCAT[v(t,r,"Category")]){ var key=v(t,r,"App"); if(!ra["#"+key]) ra["#"+key]={n:0,src:0}; ra["#"+key].n+=n(t,r,"Count"); ra["#"+key].src++; } }
   var ral=[]; for(var ak in ra) if(ra.hasOwnProperty(ak)) ral.push(ak.substring(1)+" ("+ra[ak].src+" hosts, "+nf(ra[ak].n)+" hits)");
-  if(ral.length) addF(aps.a?3:2,"Remote-access / proxy / P2P applications in use: "+topList(ral,5)+" - "+(aps.has?outc(aps):"see the table for outcomes"),"Attackers favour remote-access tools (AnyDesk, TeamViewer, ScreenConnect) for hands-on access; blocked attempts still show which hosts run the client."+part(t),"utm","utm_app","");
-  t=tbl("utm_web"); var bad=0, wb=stat3("webBad"); for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=2) bad++; }
-  if(bad || wb.a+wb.b+wb.u) addF(wb.a?3:2,"Web filter: requests to malicious / phishing / C2 / proxy-avoidance categories - "+(wb.has?outc(wb):(nf(bad)+" host/site pairs")),(wb.a?"Allowed requests to these categories reached the site - check those hosts first (BAD-CATEGORY-ALLOWED rows). ":"")+nf(bad)+" host/site pairs are flagged in the table."+part(t),"utm","utm_web","");
+  if(!aps.has){ for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=3 && RISKY_APPCAT[v(t,t.rows[i],"Category")]) aps.a++; } }   // older run: allowed rows from the per-row flags
+  if(ral.length) addF(aps.a?3:2,"Remote-access / proxy / P2P applications in use: "+topList(ral,5)+" - "+(aps.has?outc(aps):(aps.a?(aps.a+" host/app pairs allowed (older run - from the Actions column)"):"outcomes from the Actions column (older run)")),"Attackers favour remote-access tools (AnyDesk, TeamViewer, ScreenConnect) for hands-on access; blocked attempts still show which hosts run the client."+part(t),"utm","utm_app","");
+  t=tbl("utm_web"); var bad=0, badA=0, wb=stat3("webBad"); for(i=0;i<t.rows.length;i++){ if(t.flags[i].s>=2) bad++; if(t.flags[i].s>=3) badA++; }
+  if(!wb.has) wb.a=badA;   // older run: no full-data stats - fall back to the per-row flags (allowed anywhere on a row = allowed)
+  if(bad || wb.a+wb.b+wb.u) addF(wb.a?3:2,"Web filter: requests to malicious / phishing / C2 / proxy-avoidance categories - "+(wb.has?outc(wb):(nf(bad)+" host/site pairs"+(wb.a?(", "+wb.a+" with an allowed action (older run - from the Actions column)"):""))),(wb.a?"Allowed requests to these categories reached the site - check those hosts first (BAD-CATEGORY-ALLOWED rows). ":"")+nf(bad)+" host/site pairs are flagged in the table."+part(t),"utm","utm_web","");
   /* IOC */
   t=tbl("ioc_terms"); if(t.total){ var it=[]; for(i=0;i<t.rows.length;i++) it.push(v(t,t.rows[i],"Term")+" ("+nf(n(t,t.rows[i],"Hits"))+")"); addF(4,"IOC hits in the raw logs: "+topList(it,6),"Matching lines (with the full raw line) are on the IOC hits tab.","ioc","ioc_terms",""); }
   else if((DATA.iocTerms||[]).length) addF(0,"IOC sweep: "+DATA.iocTerms.length+" term(s) checked against every line - no hits","","ioc","ioc_terms","");
@@ -1768,7 +1804,7 @@ var TABLE_NOTES={
   coverage:"First / last line per log type. A type whose span is much shorter than the others was probably cut off by an export row limit.",
   files:"Every file found under the input, with what happened to it: read, read (N gzip members), PARTIAL (a gzip member could not be decoded - lines after it are missing), FAILED (could not be opened or broke mid-read), or skipped (not FortiGate key=value). File is the path relative to the input folder, so same-named files in different folders stay separate.",
   utm_av:"Every antivirus detection. Outcome is mapped from the FortiOS action: blocked (blocked, attachment-removed, quarantined...), allowed (monitored, passthrough...), or unknown (an action this app does not recognise - read the Action column). Allowed and unknown rows are always kept in the preview.",
-  utm_web:"Web-filter events per site and source. Blocked / Allowed / UnknownOutcome count individual requests, so a site that was blocked once and allowed once shows both.",
+  utm_web:"Web-filter events per site, source and category (a site that changes category gets one row per category). Blocked / Allowed / UnknownOutcome count individual requests, so a site that was blocked once and allowed once shows both.",
   admin_user:"Admin login attempts per username. FailsIn24hBeforeOk = the most failures for this account that fell in the 24 h before one of its successful logins.",
   vpn_events:"VPN events in time order (IPsec statistics / progress noise left out). The full CSV is in file order.",
   timeline:"Admin sessions, config changes, VPN logins, AV / IPS / app-control first-sightings and IOC hits merged on one stream, newest first."
