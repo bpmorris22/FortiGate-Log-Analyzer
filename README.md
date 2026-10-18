@@ -7,6 +7,7 @@ A single-file Windows GUI (HTA) for triaging **FortiGate / FortiOS logs exactly 
 - **Who came in over VPN?** SSL-VPN logins per user and source country, password guessing, and IPsec peers (including Internet IKE scanning).
 - **What was exposed, and what left?** Inbound sessions accepted from the Internet, internal admin-port fan-out (lateral movement), the largest uploads, and Internet destinations by bytes out.
 - **What did the security profiles catch?** Antivirus, IPS, application control (remote-access tools flagged), web filter and SSL inspection.
+- **When?** The Activity over time tab charts admin and VPN logins (success / fail, by method), traffic volume, sessions, malware and other security-profile events, config changes and IOC hits per hour or day - with export coverage gaps hatched so missing data never reads as quiet.
 
 Part of the DFIR toolkit family (Artifact Finder, the EZ-tool wrappers, Hayabusa, Hawk, UAC, vSphere and Data Domain triage).
 

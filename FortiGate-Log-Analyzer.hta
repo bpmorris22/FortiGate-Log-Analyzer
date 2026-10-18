@@ -115,6 +115,18 @@
   .modal code{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}
   .modal .x{float:right;cursor:pointer;color:#8b949e;font-size:22px;line-height:1}.modal .x:hover{color:#e6edf3}
   .modal .gh{font-family:Consolas,monospace;font-size:12px}
+  .actp h3{margin-bottom:6px}
+  .actlg{margin:2px 0 6px;font-size:12px;white-space:normal}
+  .actk{display:inline-block;margin:0 12px 4px 0;cursor:pointer;color:#c9d1d9;vertical-align:middle}
+  .actk.off{color:#6e7681}
+  .actk input{vertical-align:middle;margin:0 4px 0 0}
+  .actk b{color:#e6edf3;font-weight:600;margin-left:2px}
+  .actk .sw{display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  .actk .sw.hatch{background:#161b22;border:1px dashed #6e7681;width:10px;height:10px}
+  .actsvg{display:block;background:#161b22}
+  #actTip{position:absolute;z-index:900;display:none;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 9px;font-size:12px;min-width:170px;box-shadow:0 4px 14px rgba(0,0,0,.5)}
+  #actTip .tt{color:#8b949e;font-size:11px;margin-bottom:3px}
+  #actTip .tk{display:inline-block;width:10px;height:2px;vertical-align:middle;margin-right:6px}
   .maxwarn{display:inline-block;color:#e3b341;font-weight:600;cursor:help;border:1px solid #8a7a2a;background:#2a2410;border-radius:10px;padding:1px 8px;font-size:11px;margin-left:6px;vertical-align:middle}
 </style>
 </head>
@@ -186,6 +198,28 @@
       <div class="card"><h3 id="ovTitle" title="The run at a glance: volume, time span, findings counts and the device the logs came from">Overview</h3><div id="statbar"></div></div>
       <div class="card"><h3 title="One-line conclusions built from every table by this app's rules, most severe first. CRITICAL / HIGH need checking; MEDIUM is worth a look; LOW / INFO are context. Click one to open its table.">Findings <span class="muted" style="text-transform:none;letter-spacing:0">- generated from the tables by this app's rules (see Help); click a finding to open its table</span></h3><div id="findings"></div></div>
       <div class="card"><h3 title="The time span each log type covers, against the span of all logs. A short bar on a busy log type usually means an export row limit cut it off - conclusions from it only hold for that span.">Log coverage <span class="muted" style="text-transform:none;letter-spacing:0">- what time span each log type actually covers (an export row cap shows up here as a short bar)</span></h3><div id="coverage"></div></div>
+    </div>
+
+    <div id="actPane" class="hide">
+      <div class="card">
+        <h3 title="Counts per hour or day, from counters the engine keeps while it reads every line. One panel per question; hover a bar for exact counts, click it to open the related table for that day.">Activity over time</h3>
+        <div class="row" style="white-space:normal">
+          <span class="chiplab" title="Bar width">interval</span>
+          <select id="actGran" title="Bar width: auto = hourly for spans up to 10 days, daily beyond"><option value="auto">auto</option><option value="hour">hourly</option><option value="day">daily</option></select>
+          <span class="sep"></span>
+          <span class="chiplab" title="Which clock the bars use">clock</span>
+          <select id="actClock" title="UTC, or the firewall's own local clock (the date / time it logged for each event - daylight-saving changes are handled per event)"><option value="utc">UTC</option><option value="local">device clock</option></select>
+          <span class="sep"></span>
+          <input class="txt mono" id="afrom" placeholder="from YYYY-MM-DD" style="width:130px" title="Show only this UTC date window (shared with the date window in the tables)">
+          <span class="muted">&rarr;</span>
+          <input class="txt mono" id="ato" placeholder="to YYYY-MM-DD" style="width:130px" title="Show only this UTC date window (shared with the date window in the tables)">
+          <button class="btn sm" id="actClear" title="Remove the date window">all dates</button>
+          <span class="muted" id="actInfo" style="margin-left:8px;font-size:12px"></span>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:6px">Hatched intervals have no lines of that log type at all - the export does not cover them, so an empty bar there means no data, not no activity. These are pre-counted totals: the pivot, search and other table filters do not apply here. Each chart has a table view (link at its top right).</div>
+      </div>
+      <div id="actPanels"></div>
+      <div id="actTip"></div>
     </div>
 
     <div class="card hide" id="tblCard">
@@ -565,18 +599,35 @@ public static class FgEngine {
   static long AVB = 0, AVA = 0, AVU = 0, WEBB = 0, WEBA_ = 0, WEBU = 0, APPB = 0, APPA_ = 0, APPU = 0, IPSHB = 0, IPSHA = 0, IPSHU = 0, CFGRISKY = 0;
   static string CURFILE = "", CURKEY = "";
   public static string CurLocal = "";
+  public static long CurLocalMs = 0;   // the device's local wall clock for the current line, as if it were UTC (0 = unknown)
+  /* hourly activity counters for the Activity-over-time charts: SER[name][hour index] in UTC, and SER["L|"+name] on the
+     device's own clock (its local wall time, so a run that crosses a daylight-saving change is right per event) */
+  static Dictionary<string,Dictionary<long,long>> SER = new Dictionary<string,Dictionary<long,long>>(StringComparer.Ordinal);
+  static void Bump(string name, long bucket, long v){
+    Dictionary<long,long> d; if(!SER.TryGetValue(name, out d)){ d = new Dictionary<long,long>(); SER[name] = d; }
+    long c; d.TryGetValue(bucket, out c); d[bucket] = c + v;
+  }
+  static void Hit(string name, long ms, long v){
+    if(v <= 0) return;
+    if(ms > 0) Bump(name, ms / 3600000L, v);
+    if(CurLocalMs > 0) Bump("L|" + name, CurLocalMs / 3600000L, v);
+  }
+  static string MethodKey(string m){ m = (m ?? "").ToLowerInvariant(); if(m.IndexOf("ssh") >= 0) return "ssh"; if(m.IndexOf("http") >= 0 || m.IndexOf("gui") >= 0) return "https"; return "other"; }
   /* the device's local wall clock for the current line: FortiOS writes date= / time= in the firewall's own local time
      and tz= is that clock's offset. Kept per line (the offset can change mid-run, e.g. daylight saving). Without date/time
      it is rebuilt from eventtime + tz; with neither it is unknown (""), never assumed UTC. */
   static string DeviceLocal(long ms){
     string d = G("date"), t = G("time"), tz = G("tz");
+    CurLocalMs = 0;
     if(d.Length >= 8 && t.Length >= 5){
       string[] tp = t.Split(':'); string tt = t;
       if(tp.Length == 3) tt = tp[0].PadLeft(2, '0') + ":" + tp[1].PadLeft(2, '0') + ":" + tp[2].PadLeft(2, '0');
-      return d.Replace('/', '-') + " " + tt + (tz.Length > 0 ? " " + tz : "");
+      string wall = d.Replace('/', '-') + " " + tt;
+      DateTime wd; if(DateTime.TryParseExact(wall, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out wd)) CurLocalMs = (long)(wd - new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds;
+      return wall + (tz.Length > 0 ? " " + tz : "");
     }
     if(tz.Length == 5 && ms > 0){
-      int hh, mm; if(int.TryParse(tz.Substring(1, 2), out hh) && int.TryParse(tz.Substring(3, 2), out mm)){ long off = (hh * 60 + mm) * 60000L * (tz[0] == '-' ? -1 : 1); return Ts(ms + off) + " " + tz; }
+      int hh, mm; if(int.TryParse(tz.Substring(1, 2), out hh) && int.TryParse(tz.Substring(3, 2), out mm)){ long off = (hh * 60 + mm) * 60000L * (tz[0] == '-' ? -1 : 1); CurLocalMs = ms + off; return Ts(ms + off) + " " + tz; }
     }
     return "";
   }
@@ -690,7 +741,7 @@ public static class FgEngine {
   static void OnLine(string raw, long ms){
     string type = G("type"), sub = G("subtype"), logid = G("logid");
     string cat = (type.Length > 0 ? type : "?") + "/" + (sub.Length > 0 ? sub : "?");
-    FgAgg cv = Get(COVER, cat); cv.Seen(ms); cv.Add(0, CURFILE);
+    FgAgg cv = Get(COVER, cat); cv.Seen(ms); cv.Add(0, CURFILE); Hit("cov|" + cat, ms, 1);
     if(ms > 0){ FgAgg cd = Get(COVERDAY, cat + "|" + DayKey(ms)); cd.Seen(ms); cd.S0 = cat; cd.C[0] = DayKey(ms); }
     FgAgg fa = Get(FILES, CURKEY); fa.Add(0, cat); fa.Touch(ms);
     string dn = G("devname"), did = G("devid");
@@ -737,12 +788,12 @@ public static class FgEngine {
         ADMSESS.Add(pub, Ts(ms), "logout", user, src, method, G("profile"), L("duration"), G("state"), G("reason"), G("msg"));
         AddTl(ms, "admin", "", "Admin logout " + user + " (" + method + ")", src, user, G("state") + " " + G("reason"));
         return; }
-      if(lockout){ s.C[2]++; s.Add(3, G("reason")); return; }
-      if(status == "success"){ s.C[1]++; s.Ok(ms); if(u != null){ u.C[1]++; u.Ok(ms); u.Add(0, src); u.Add(1, method); u.Add(2, G("profile")); }
+      if(lockout){ s.C[2]++; s.Add(3, G("reason")); Hit("adm.lock", ms, 1); return; }
+      if(status == "success"){ s.C[1]++; s.Ok(ms); Hit("adm.ok." + MethodKey(method), ms, 1); if(u != null){ u.C[1]++; u.Ok(ms); u.Add(0, src); u.Add(1, method); u.Add(2, G("profile")); }
         s.Add(0, user); s.Add(1, method);
         ADMSESS.Add(pub, Ts(ms), "login ok", user, src, method, G("profile"), 0L, "", G("reason"), G("msg"));
         AddTl(ms, "admin", pub ? "high" : "", "Admin login OK " + user + " via " + method + (G("profile").Length > 0 ? " [" + G("profile") + "]" : ""), src, user, G("msg"));
-      } else { s.C[0]++; s.Fail(ms); s.Add(0, user); s.Add(1, method); s.Add(3, G("reason")); if(u != null){ u.C[0]++; u.Fail(ms); u.Add(0, src); u.Add(1, method); } }
+      } else { s.C[0]++; s.Fail(ms); Hit("adm.fail." + MethodKey(method), ms, 1); s.Add(0, user); s.Add(1, method); s.Add(3, G("reason")); if(u != null){ u.C[0]++; u.Fail(ms); u.Add(0, src); u.Add(1, method); } }
       return;
     }
     if(logid == "0100032247" || logdesc.IndexOf("SSH protocol cannot be negotiated", StringComparison.OrdinalIgnoreCase) >= 0){
@@ -770,7 +821,7 @@ public static class FgEngine {
     RegexOptions.IgnoreCase | RegexOptions.Compiled);
   static void ConfigEv(long ms){
     string user = G("user"), ui = G("ui"), path = G("cfgpath"), obj = G("cfgobj"), attr = G("cfgattr"), act = G("action");
-    bool risky = RISKYCFG.IsMatch(path) || IsPublic(IpFromUi(ui)); if(risky) CFGRISKY++;
+    bool risky = RISKYCFG.IsMatch(path) || IsPublic(IpFromUi(ui)); if(risky) CFGRISKY++; Hit(risky ? "cfg.risky" : "cfg.other", ms, 1);
     CFG.Add(risky, Ts(ms), user, ui, act, path, obj, attr, G("msg"));
     string sev = path.StartsWith("system.admin") || path.StartsWith("system.api-user") || path.StartsWith("user.local") || path.StartsWith("system.accprofile") ? "high" : (RISKYCFG.IsMatch(path) ? "med" : "");
     AddTl(ms, "config", sev, act + " " + path + (obj.Length > 0 ? " " + obj : ""), IpFromUi(ui), user, Clip(attr, 400));
@@ -783,8 +834,8 @@ public static class FgEngine {
       FgAgg a = Get(VPNSSL, user + "|" + remip); a.Seen(ms); a.S0 = user; a.S1 = remip; a.S2 = G("srccountry"); if(a.S2.Length == 0) a.S2 = G("remcountry");
       a.Add(0, G("tunnelip")); a.Add(1, G("reason")); a.Add(2, ttype); a.Add(3, G("group"));
       string sev = "";
-      if(action == "tunnel-up"){ a.C[0]++; a.Ok(ms); sev = "med"; }
-      else if(action == "ssl-login-fail" || G("status") == "failure"){ a.C[1]++; a.Fail(ms); }
+      if(action == "tunnel-up"){ a.C[0]++; a.Ok(ms); sev = "med"; Hit("vpn.ssl.up", ms, 1); }
+      else if(action == "ssl-login-fail" || G("status") == "failure"){ a.C[1]++; a.Fail(ms); Hit("vpn.ssl.fail", ms, 1); }
       else if(action == "tunnel-down"){ a.C[2]++; a.C[3] += L("sentbyte"); a.C[4] += L("rcvdbyte"); }
       else a.C[5]++;
       VPNEV.Add(action == "tunnel-up", Ts(ms), "ssl", action, user, remip, a.S2, G("tunnelip"), G("vpntunnel"), G("reason"), L("sentbyte"), L("rcvdbyte"), G("msg"));
@@ -794,7 +845,7 @@ public static class FgEngine {
     string tun = G("vpntunnel"); if(tun.Length == 0) tun = "(no tunnel matched)";
     FgAgg b = Get(VPNIPS, tun + "|" + remip); b.Seen(ms); b.S0 = tun; b.S1 = remip; if(b.S2.Length == 0) b.S2 = G("srccountry"); b.S3 = G("locip");
     string ld = logdesc.ToLowerInvariant();
-    if(ld.Contains("phase 1 error")){ b.C[1]++; b.Add(0, G("reason").Length > 0 ? G("reason") : G("status")); }
+    if(ld.Contains("phase 1 error")){ b.C[1]++; Hit("vpn.ipsec.err", ms, 1); b.Add(0, G("reason").Length > 0 ? G("reason") : G("status")); }
     else if(ld.Contains("phase 1") && G("status") == "success" && G("result") == "DONE") b.C[0]++;
     else if(ld.Contains("sa installed")) b.C[2]++;
     else if(action == "tunnel-up"){ b.C[3]++; AddTl(ms, "vpn", "", "IPsec tunnel up " + tun, remip, G("xauthuser"), G("assignip")); }
@@ -809,8 +860,8 @@ public static class FgEngine {
     if(user.Length == 0 || user == "system") { GenericNotable(ms, "user", logid); return; }
     FgAgg a = Get(UAUTH, user.ToLowerInvariant()); a.Seen(ms); if(a.S0.Length == 0) a.S0 = user;
     a.Add(0, src); a.Add(1, G("authserver")); a.Add(2, G("group")); a.Add(4, G("authproto"));
-    if(status == "success") a.C[0]++;
-    else if(status == "failure" || status == "failed"){ a.C[1]++; a.Add(3, G("reason"));
+    if(status == "success"){ a.C[0]++; Hit("auth.ok", ms, 1); }
+    else if(status == "failure" || status == "failed"){ a.C[1]++; a.Add(3, G("reason")); Hit("auth.fail", ms, 1);
       if(src.Length > 0){ FgAgg s = Get(UAUTHSRC, src); s.Seen(ms); s.S0 = src; s.C[0]++; s.Add(0, user); } }
     else if(status == "timed_out" || action == "auth-timeout") a.C[2]++;
     else if(status == "logon" || action.EndsWith("logon")) a.C[3]++;
@@ -842,6 +893,10 @@ public static class FgEngine {
     bool fromNet = rs >= 0 ? rs == 1 : (vpn ? false : FallbackPub(src, ref fb));
     bool toNet = rd >= 0 ? rd == 1 : (vpn ? false : FallbackPub(dst, ref fb));
     if(fb && !interim) ROLEFALLBACK++;
+    if(!interim){ Hit(denied || failed ? "ses.deny" : "ses.acc", ms, 1); if(fromNet) Hit(denied || failed ? "inb.deny" : "inb.acc", ms, 1); }
+    if(!fromNet && toNet){ Hit("trf.out", ms, sb); Hit("trf.in", ms, rb); }
+    else if(!fromNet){ Hit("trf.int", ms, sb + rb); }
+    else { Hit("trf.inb", ms, sb + rb); }
     string service = G("service"), app = G("app"); if(app.Length == 0) app = G("dstinetsvc");
     string user = G("user"); if(user.Length == 0) user = G("unauthuser");
     string pol = G("policyid") + (G("policyname").Length > 0 ? " " + G("policyname") : "");
@@ -896,7 +951,7 @@ public static class FgEngine {
     string src = G("srcip"), dst = G("dstip"), act = G("action"), user = G("user"); if(user.Length == 0) user = G("unauthuser");
     int oc = Outcome(act);
     if(sub == "virus"){
-      if(oc == 1) AVB++; else if(oc == 2) AVA++; else AVU++;
+      if(oc == 1) AVB++; else if(oc == 2) AVA++; else AVU++; Hit(oc == 1 ? "av.blocked" : (oc == 2 ? "av.allowed" : "av.unknown"), ms, 1);
       AVL.Add(oc != 1, Ts(ms), OutcomeName(oc), src, dst, G("service"), G("direction"), G("filename"), G("virus"), G("dtype"), act, G("url").Length > 0 ? G("url") : G("hostname"), user, G("dstcountry"), G("analyticscksum").Length > 0 ? G("analyticscksum") : G("filehash"), G("msg"));
       AddTl(ms, "av", oc == 1 ? "med" : "high", "AV " + G("eventtype") + ": " + G("virus") + " in " + G("filename") + " (" + act + ")", src, user, dst + " " + G("service"));
       return;
@@ -905,7 +960,7 @@ public static class FgEngine {
       string atk = G("attack"), sv = G("severity");
       FgAgg a = Get(IPSA, atk + "|" + src + "|" + dst + "|" + G("dstport")); a.Seen(ms); a.S0 = atk; a.S1 = src; a.S2 = dst; a.S3 = G("dstport"); a.S4 = sv;
       a.C[oc]++; a.Add(0, act); a.Add(1, G("attackid")); a.Add(2, G("direction")); a.Add(3, G("srccountry")); a.Add(4, G("ref")); a.Add(5, user);
-      if(sv == "critical" || sv == "high"){ if(oc == 1) IPSHB++; else if(oc == 2) IPSHA++; else IPSHU++; }
+      if(sv == "critical" || sv == "high"){ if(oc == 1) IPSHB++; else if(oc == 2) IPSHA++; else IPSHU++; Hit(oc == 1 ? "ips.hi.blocked" : "ips.hi.notblocked", ms, 1); } else Hit("ips.other", ms, 1);
       if(a.N == 1 || (oc != 1 && a.C[2] + a.C[0] == 1)) AddTl(ms, "ips", (sv == "critical" || sv == "high") ? "high" : "med", "IPS " + atk + " [" + sv + "] " + act, src, user, dst + ":" + G("dstport"));
       return;
     }
@@ -913,7 +968,7 @@ public static class FgEngine {
       string app = G("app"), cat = G("appcat");
       FgAgg a = Get(APPA, app + "|" + src); a.Seen(ms); a.S0 = app; a.S1 = src; a.S2 = cat; a.S3 = G("apprisk");
       a.C[oc]++; a.Add(0, act); a.Add(1, dst); a.Add(2, user); a.Add(3, G("dstport")); a.Add(4, G("dstcountry"));
-      if(RiskyApp(cat)){ if(oc == 1) APPB++; else if(oc == 2) APPA_++; else APPU++; }
+      if(RiskyApp(cat)){ if(oc == 1) APPB++; else if(oc == 2) APPA_++; else APPU++; Hit(oc == 1 ? "app.risky.blocked" : (oc == 2 ? "app.risky.allowed" : "app.risky.unknown"), ms, 1); }
       if((a.N == 1 || (oc != 1 && a.C[2] + a.C[0] == 1)) && (RiskyApp(cat) || G("apprisk") == "critical"))
         AddTl(ms, "app", oc == 1 ? "" : "med", cat + ": " + app + " (" + act + ")" + (a.N == 1 ? " first seen" : " first allowed"), src, user, dst);
       return;
@@ -925,7 +980,7 @@ public static class FgEngine {
       FgAgg a = Get(WEBA, hn + "|" + src + "|" + cat); a.Seen(ms); a.S0 = hn; a.S1 = src; a.S2 = cat; if(a.S3.Length == 0) a.S3 = Clip(G("url"), 300);
       a.C[oc]++; a.Add(0, act); a.Add(1, user); a.Add(2, G("dstcountry")); a.Add(3, G("profile")); a.C[4] += L("sentbyte");
       FgAgg c = Get(WEBC, cat + "|" + act); c.Seen(ms); c.S0 = cat; c.S1 = act; c.Add(0, hn); c.Add(1, src);
-      if(MALCAT.IsMatch(cat)){ if(oc == 1) WEBB++; else if(oc == 2) WEBA_++; else WEBU++; }
+      if(MALCAT.IsMatch(cat)){ if(oc == 1) WEBB++; else if(oc == 2) WEBA_++; else WEBU++; Hit(oc == 1 ? "web.bad.blocked" : (oc == 2 ? "web.bad.allowed" : "web.bad.unknown"), ms, 1); }
       return;
     }
     if(sub == "ssl"){
@@ -955,6 +1010,7 @@ public static class FgEngine {
       }
       if(p < 0) continue;
       FgAgg a = Get(IOCT, term); a.Seen(ms); a.S0 = term; a.Add(0, cat); a.Add(1, G("srcip")); a.Add(2, G("dstip"));
+      Hit("ioc.hit", ms, 1);
       IOCH.Add(true, Ts(ms), term, cat, G("srcip"), G("dstip"), G("dstport"), G("user"), G("action"), CURFILE, CURKEY, Clip(raw, 1500));
       if(a.N <= 50) AddTl(ms, "ioc", "high", "IOC hit '" + term + "' in " + cat, G("srcip"), G("user"), Clip(G("msg").Length > 0 ? G("msg") : (G("dstip") + ":" + G("dstport") + " " + G("action")), 300));
     }
@@ -1017,7 +1073,7 @@ public static class FgEngine {
     TSVC = new Dictionary<string,FgAgg>(); TLAT = new Dictionary<string,FgAgg>(); IPSA = new Dictionary<string,FgAgg>(); APPA = new Dictionary<string,FgAgg>();
     WEBA = new Dictionary<string,FgAgg>(); WEBC = new Dictionary<string,FgAgg>(); SSLA = new Dictionary<string,FgAgg>(); UTMO = new Dictionary<string,FgAgg>();
     IOCT = new Dictionary<string,FgAgg>(); DEVS = new Dictionary<string,FgAgg>(); TRFACT = new Dictionary<string,FgAgg>();
-    BIG = new List<object[]>();
+    BIG = new List<object[]>(); SER.Clear();
     if(!Directory.Exists(outDir)) Directory.CreateDirectory(outDir);
     TL = new FgList("timeline", outDir, stamp, "Time_UTC", "Category", "Severity", "Summary", "Src", "User", "Detail");
     ADMSESS = new FgList("admin_sessions", outDir, stamp, "Time_UTC", "Event", "User", "SrcIP", "Method", "Profile", "DurationSec", "State", "Reason", "Message");
@@ -1103,6 +1159,13 @@ public static class FgEngine {
     sb.Append(",\"appRisky\":{\"blocked\":").Append(APPB).Append(",\"allowed\":").Append(APPA_).Append(",\"unknown\":").Append(APPU).Append("}");
     sb.Append(",\"ipsHigh\":{\"blocked\":").Append(IPSHB).Append(",\"allowed\":").Append(IPSHA).Append(",\"unknown\":").Append(IPSHU).Append("}");
     sb.Append(",\"configRisky\":").Append(CFGRISKY).Append(",\"roleFallbackSessions\":").Append(ROLEFALLBACK).Append("}");
+    sb.Append(",\"timeseries\":{\"bucketMs\":3600000,\"series\":{");
+    { bool fs1 = true; List<string> names = new List<string>(SER.Keys); names.Sort(StringComparer.Ordinal);
+      foreach(string nm in names){ if(!fs1) sb.Append(","); fs1 = false; sb.Append(J(nm)).Append(":[");
+        List<long> ks = new List<long>(SER[nm].Keys); ks.Sort(); bool f2 = true;
+        foreach(long k in ks){ if(!f2) sb.Append(","); f2 = false; sb.Append("[").Append(k).Append(",").Append(SER[nm][k]).Append("]"); }
+        sb.Append("]"); } }
+    sb.Append("}}");
     sb.Append(",\"iocTerms\":["); for(int i = 0; i < IOCS.Length; i++){ if(i > 0) sb.Append(","); sb.Append(J(IOCS[i])); } sb.Append("]");
     sb.Append(",\"csvFiles\":["); for(int i = 0; i < produced.Count; i++){ if(i > 0) sb.Append(","); sb.Append(J(produced[i])); } sb.Append("]");
     sb.Append(",\"tables\":{");
@@ -1326,7 +1389,7 @@ function bootLog(msg){
 window.onerror=function(msg,url,line){ bootLog("ONERROR line "+line+": "+msg); return false; };
 bootLog("script top-level reached");
 
-var APP_VERSION = "0.2.5";
+var APP_VERSION = "0.3.0";
 var APP_NAME = "FortiGate-Log-Analyzer";
 var MAXROWS = 6000;
 var DATA = null;                 // the loaded engine JSON
@@ -1918,9 +1981,176 @@ function buildFindings(){
   FINDINGS.sort(function(a,b){ return b.s-a.s; });
 }
 
+
+/* ---------- Activity over time ----------
+   Hourly counters from the engine (DATA.timeseries: UTC buckets, and "L|" buckets on the device's own clock), drawn as
+   stacked bars - one panel per question, at most four series each (validated dark palette: blue, orange, aqua, yellow
+   in fixed slot order). Hours in which the panel's log types have NO lines are hatched, so an export gap never reads
+   as "no activity". Hover a bar for the exact counts; click it to open the related table for that time window. */
+var ACT_COLORS=["#3987e5","#d95926","#199e70","#c98500"];
+var ACT_GRAN="auto", ACT_CLOCK="utc", ACT_OFF={"vol.int":true,"vol.inb":true,"ses.inacc":true,"ses.indeny":true}, ACT_METHODS={https:true, ssh:true, other:true}, ACT_TBL={}, ACT_BINS={};
+var ACT_PANELS=[
+  {id:"adm", title:"Admin logins to the firewall", unit:"n", cats:["event/system"], open:["adm","admin_sessions"], methods:true,
+   note:"Every admin login attempt (GUI / HTTPS, SSH, console). A wall of failures is brute force; a success inside or right after it needs checking.",
+   series:[["ok","Succeeded",["adm.ok.*"]],["fail","Failed",["adm.fail.*"]],["lock","Lockouts",["adm.lock"]]]},
+  {id:"vpn", title:"VPN logins", unit:"n", cats:["event/vpn"], open:["vpn","vpn_events"],
+   note:"SSL-VPN tunnels coming up and failed SSL-VPN logins, plus IPsec phase-1 errors (mostly Internet IKE scanning).",
+   series:[["up","SSL-VPN up",["vpn.ssl.up"]],["fail","SSL-VPN failed",["vpn.ssl.fail"]],["ike","IPsec phase-1 errors",["vpn.ipsec.err"]]]},
+  {id:"auth", title:"Firewall user authentication", unit:"n", cats:["event/user"], open:["usr","user_auth"],
+   note:"Captive portal / LDAP / RADIUS / FSSO authentication results.",
+   series:[["ok","Success",["auth.ok"]],["fail","Failure",["auth.fail"]]]},
+  {id:"vol", title:"Traffic volume", unit:"bytes", cats:["traffic/forward","traffic/local"], open:["trf","traffic_public_dst"],
+   note:"Bytes per interval (long sessions counted by their per-interval deltas). Out = internal hosts to the Internet - spikes here are where exfiltration shows.",
+   series:[["out","Out to Internet",["trf.out"]],["in","In from Internet",["trf.in"]],["int","Internal",["trf.int"]],["inb","Inbound from Internet (sessions arriving)",["trf.inb"]]]},
+  {id:"ses", title:"Sessions", unit:"n", cats:["traffic/forward","traffic/local"], open:["trf","traffic_actions"],
+   note:"Sessions the firewall accepted and denied (all directions), and how many came in from the Internet.",
+   series:[["acc","Accepted",["ses.acc"]],["deny","Denied / failed",["ses.deny"]],["inacc","Inbound accepted",["inb.acc"]],["indeny","Inbound denied",["inb.deny"]]]},
+  {id:"av", title:"Antivirus detections", unit:"n", cats:["utm/virus"], open:["utm","utm_av"],
+   note:"Detections by outcome. Allowed = the file got through (monitor / passthrough profile).",
+   series:[["allowed","Allowed",["av.allowed"]],["blocked","Blocked",["av.blocked"]],["unknown","Outcome unknown",["av.unknown"]]]},
+  {id:"ips", title:"IPS detections", unit:"n", cats:["utm/ips"], open:["utm","utm_ips"],
+   note:"Critical / high signatures split by whether they were blocked; everything else together.",
+   series:[["hinb","Critical/high not blocked",["ips.hi.notblocked"]],["hib","Critical/high blocked",["ips.hi.blocked"]],["oth","Medium / low",["ips.other"]]]},
+  {id:"web", title:"Web filter - malicious categories", unit:"n", cats:["utm/webfilter"], open:["utm","utm_web"],
+   note:"Requests to malicious, phishing, C2, proxy-avoidance and similar categories.",
+   series:[["allowed","Allowed",["web.bad.allowed"]],["blocked","Blocked",["web.bad.blocked"]],["unknown","Outcome unknown",["web.bad.unknown"]]]},
+  {id:"app", title:"Remote-access / proxy / P2P applications", unit:"n", cats:["utm/app-ctrl"], open:["utm","utm_app"],
+   note:"Application-control hits for Remote.Access, Proxy and P2P categories.",
+   series:[["allowed","Allowed",["app.risky.allowed"]],["blocked","Blocked",["app.risky.blocked"]],["unknown","Outcome unknown",["app.risky.unknown"]]]},
+  {id:"cfg", title:"Configuration changes", unit:"n", cats:["event/system"], open:["cfg","config_changes"],
+   note:"Risky = admin accounts, policy, VIPs, interfaces, VPN, user groups, logging, routing, or made from a public address.",
+   series:[["risky","Risky changes",["cfg.risky"]],["other","Other changes",["cfg.other"]]]},
+  {id:"ioc", title:"IOC hits (raw-line sweep)", unit:"n", cats:null, open:["ioc","ioc_hits"],
+   note:"Raw log lines matching the IOC terms this run was swept for.",
+   series:[["hit","IOC hits",["ioc.hit"]]]}
+];
+function actSeriesMap(){ var ts=DATA&&DATA.timeseries&&DATA.timeseries.series; return ts||null; }
+/* resolve a raw series name (with ".*" = every admin method the method filter lets through) for the active clock */
+function actRaw(name){
+  var S=actSeriesMap(), pre=(ACT_CLOCK==="local")?"L|":"", out={};
+  var names=[name];
+  if(/\.\*$/.test(name)){ var base=name.slice(0,-1); names=[]; for(var m in ACT_METHODS) if(ACT_METHODS.hasOwnProperty(m) && ACT_METHODS[m]) names.push(base+m); }
+  for(var i=0;i<names.length;i++){ var arr=S[pre+names[i]]; if(!arr) continue; for(var j=0;j<arr.length;j++){ var k=arr[j][0]; out[k]=(out[k]||0)+arr[j][1]; } }
+  return out;
+}
+function actRange(){
+  /* hour-index span: the date window when set, else the span of all logs (from the coverage counters) */
+  var S=actSeriesMap(), pre=(ACT_CLOCK==="local")?"L|":"", lo=null, hi=null;
+  for(var nm in S){ if(!S.hasOwnProperty(nm) || nm.indexOf(pre+"cov|")!==0) continue; var a=S[nm]; if(!a.length) continue;
+    if(lo===null || a[0][0]<lo) lo=a[0][0]; if(hi===null || a[a.length-1][0]>hi) hi=a[a.length-1][0]; }
+  if(lo===null) return null;
+  if(DFROM){ var f=msOf(String(DFROM).replace(/(\d{4})(\d{2})(\d{2})/,"$1-$2-$3")+" 00:00:00")/3600000; if(f>lo) lo=f; }
+  if(DTO){ var t2=msOf(String(DTO).replace(/(\d{4})(\d{2})(\d{2})/,"$1-$2-$3")+" 23:59:59")/3600000; if(Math.floor(t2)<hi) hi=Math.floor(t2); }
+  return hi>=lo?{lo:lo, hi:hi}:null;
+}
+function actGranH(r){ if(ACT_GRAN==="hour") return 1; if(ACT_GRAN==="day") return 24; return (r.hi-r.lo+1)<=240?1:24; }
+function hourLabel(h, step){ var d=new Date(h*3600000); function p(x){ return (x<10?"0":"")+x; }
+  var day=d.getUTCFullYear()+"-"+p(d.getUTCMonth()+1)+"-"+p(d.getUTCDate()); return step>=24?day:(day+" "+p(d.getUTCHours())+":00"); }
+function niceMax(v){ if(v<=0) return 1; var e=Math.pow(10,Math.floor(Math.log(v)/Math.LN10)), m=v/e; return (m<=1?1:m<=2?2:m<=5?5:10)*e; }
+function actFmt(v,unit){ return unit==="bytes"?fmtBytes(v):nf(v); }
+function renderActivity(){
+  var host=$("actPanels"), S=actSeriesMap();
+  $("actTip").style.display="none";
+  if(!S){ host.innerHTML='<div class="card"><div class="muted">This run was processed by an older version and has no activity counters. Re-process the logs with this version to get the charts.</div></div>'; return; }
+  var r=actRange();
+  if(!r){ host.innerHTML='<div class="card"><div class="muted">No log lines fall inside the selected window.</div></div>'; return; }
+  var step=actGranH(r), lo=Math.floor(r.lo/step)*step, nb=Math.floor((r.hi-lo)/step)+1;
+  $("actInfo").innerHTML=nf(nb)+" "+(step===1?"hourly":"daily")+" bars, "+hourLabel(lo,24)+" to "+hourLabel(lo+nb*step-1,24)+" ("+(ACT_CLOCK==="local"?"device clock":"UTC")+")";
+  var h="";
+  for(var p=0;p<ACT_PANELS.length;p++) h+=actPanelHtml(ACT_PANELS[p], lo, nb, step);
+  host.innerHTML=h;
+}
+function actPanelHtml(P, lo, nb, step){
+  var i, k, s, S=actSeriesMap(), pre=(ACT_CLOCK==="local")?"L|":"";
+  // coverage: lines of the panel's log types per bin (null cats = always covered)
+  var cov=null, anyCov=false;
+  if(P.cats){ cov=[]; for(i=0;i<nb;i++) cov.push(0);
+    for(k=0;k<P.cats.length;k++){ var ca=S[pre+"cov|"+P.cats[k]]; if(!ca) continue; anyCov=true; for(i=0;i<ca.length;i++){ var b=Math.floor((ca[i][0]-lo)/step); if(b>=0&&b<nb) cov[b]+=ca[i][1]; } } }
+  // series values per bin
+  var vals=[], totals=[], tot=0, act=[];
+  for(s=0;s<P.series.length;s++){ var row=[]; for(i=0;i<nb;i++) row.push(0);
+    for(k=0;k<P.series[s][2].length;k++){ var m=actRaw(P.series[s][2][k]); for(var key in m){ if(!m.hasOwnProperty(key)) continue; var bb=Math.floor((+key-lo)/step); if(bb>=0&&bb<nb) row[bb]+=m[key]; } }
+    vals.push(row); var st=0; for(i=0;i<nb;i++) st+=row[i]; totals.push(st); }
+  for(s=0;s<P.series.length;s++){ if(!ACT_OFF[P.id+"."+P.series[s][0]]) act.push(s); }
+  var max=0; for(i=0;i<nb;i++){ var t=0; for(k=0;k<act.length;k++) t+=vals[act[k]][i]; if(t>max) max=t; tot+=t; }
+  ACT_BINS[P.id]={vals:vals, cov:cov, lo:lo, step:step, nb:nb, act:act};
+  var head='<div class="card actp"><h3 title="'+esc(P.note)+'">'+esc(P.title)+' <span class="muted" style="text-transform:none;letter-spacing:0">- '+esc(P.note)+'</span>'+
+    '<span class="lnk" style="float:right;text-transform:none;letter-spacing:0" data-acttbl="'+P.id+'" title="Show / hide this chart as a table of every non-empty interval">'+(ACT_TBL[P.id]?"chart":"table")+'</span>'+
+    '<span class="lnk" style="float:right;text-transform:none;letter-spacing:0;margin-right:14px" data-actopen="'+P.id+'" title="Open the table behind this chart, with the current date window">open table &rsaquo;</span></h3>';
+  if(P.cats && !anyCov) return head+'<div class="muted" style="font-size:12px">No '+esc(P.cats.join(" / "))+' lines in this run - this log type was not exported.</div></div>';
+  // legend: rect keys (mark), checkbox per series, total over the range
+  var lg='<div class="actlg">';
+  for(s=0;s<P.series.length;s++){ var id=P.id+"."+P.series[s][0], on=!ACT_OFF[id];
+    lg+='<label class="actk'+(on?"":" off")+'" title="'+esc((on?"Hide ":"Show ")+P.series[s][1]+" - total in range: "+actFmt(totals[s],P.unit))+'"><input type="checkbox" data-actser="'+id+'"'+(on?" checked":"")+'>'+
+      '<span class="sw" style="background:'+ACT_COLORS[s]+'"></span>'+esc(P.series[s][1])+' <b>'+esc(actFmt(totals[s],P.unit))+'</b></label>'; }
+  if(P.methods){ lg+='<span class="sep"></span><span class="chiplab" title="Which login methods are counted">method</span>';
+    var ML={https:"HTTPS / GUI", ssh:"SSH", other:"Console / other"};
+    for(var mk in ML){ if(!ML.hasOwnProperty(mk)) continue; lg+='<label class="actk'+(ACT_METHODS[mk]?"":" off")+'" title="Count '+esc(ML[mk])+' logins"><input type="checkbox" data-actmeth="'+mk+'"'+(ACT_METHODS[mk]?" checked":"")+'>'+esc(ML[mk])+'</label>'; } }
+  if(cov){ var gaps=0; for(i=0;i<nb;i++) if(!cov[i]) gaps++; if(gaps) lg+='<span class="actk" title="Intervals with no lines of this log type at all - the export does not cover them, so an empty bar there means NO DATA, not no activity"><span class="sw hatch"></span>no log lines ('+gaps+')</span>'; }
+  lg+='</div>';
+  if(ACT_TBL[P.id]){
+    var tb='<div class="scroll" style="max-height:260px"><table><thead><tr><th title="Start of the interval">'+(step===1?"Hour":"Day")+' ('+(ACT_CLOCK==="local"?"device clock":"UTC")+')</th>';
+    for(s=0;s<P.series.length;s++) tb+='<th>'+esc(P.series[s][1])+'</th>'; tb+='<th title="Log lines of this panel\'s log types in the interval">Log lines</th></tr></thead><tbody>';
+    var rows=0; for(i=0;i<nb;i++){ var any=false; for(s=0;s<P.series.length;s++) if(vals[s][i]) any=true; if(!any) continue; rows++;
+      tb+='<tr><td class="mono">'+hourLabel(lo+i*step,step)+'</td>'; for(s=0;s<P.series.length;s++) tb+='<td class="num">'+esc(actFmt(vals[s][i],P.unit))+'</td>'; tb+='<td class="num">'+(cov?nf(cov[i]):"-")+'</td></tr>'; }
+    return head+lg+tb+'</tbody></table></div>'+(rows?"":'<div class="muted" style="font-size:12px">No activity in this window.</div>')+'</div>';
+  }
+  // SVG: fixed viewBox, scales with the card
+  var W=1300, H=150, L=64, R=8, T=6, B=22, pw=W-L-R, ph=H-T-B, bw=pw/nb, gap=bw>6?2:(bw>3?1:0), ym=niceMax(max);
+  var g='<svg class="actsvg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" width="100%" height="'+H+'" data-actp="'+P.id+'">';
+  g+='<defs><pattern id="hatch_'+P.id+'" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)"><rect width="6" height="6" fill="#161b22"/><line x1="0" y1="0" x2="0" y2="6" stroke="#3a4250" stroke-width="2"/></pattern></defs>';
+  for(k=0;k<=2;k++){ var gy=T+ph-ph*k/2; g+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+gy+'" y2="'+gy+'" stroke="#263245" stroke-width="1"/>';
+    g+='<text x="'+(L-6)+'" y="'+(gy+4)+'" text-anchor="end" font-size="11" fill="#8b949e">'+esc(actFmt(Math.round(ym*k/2),P.unit))+'</text>'; }
+  for(i=0;i<nb;i++){ var x=L+i*bw;
+    if(cov && !cov[i]) g+='<rect x="'+x+'" y="'+T+'" width="'+Math.max(bw,1)+'" height="'+ph+'" fill="url(#hatch_'+P.id+')"/>';
+    var y=T+ph;
+    for(k=0;k<act.length;k++){ var vv=vals[act[k]][i]; if(!vv) continue; var hh=ph*vv/ym; if(hh<1) hh=1;
+      var seg=(k>0 && hh>3)?1:0;   // 1px surface gap between stacked segments
+      y-=hh; g+='<rect x="'+(x+gap/2)+'" y="'+y+'" width="'+Math.max(bw-gap,0.8)+'" height="'+Math.max(hh-seg,0.8)+'" fill="'+ACT_COLORS[act[k]]+'"/>'; }
+  }
+  // x labels: about 12 across
+  var every=Math.max(1,Math.ceil(nb/12));
+  for(i=0;i<nb;i+=every){ g+='<text x="'+(L+i*bw+2)+'" y="'+(H-6)+'" font-size="11" fill="#8b949e">'+esc(hourLabel(lo+i*step,step).replace(/^\d{4}-/,""))+'</text>'; }
+  // hit targets: one transparent full-height column per bin (bigger than the mark)
+  for(i=0;i<nb;i++) g+='<rect class="acthit" x="'+(L+i*bw)+'" y="'+T+'" width="'+Math.max(bw,1)+'" height="'+ph+'" fill="#ffffff" fill-opacity="0" data-actb="'+i+'" data-actp="'+P.id+'" style="cursor:pointer"/>';
+  g+='</svg>';
+  return head+lg+g+'</div>';
+}
+function actPanel(id){ for(var i=0;i<ACT_PANELS.length;i++) if(ACT_PANELS[i].id===id) return ACT_PANELS[i]; return null; }
+function actTip(e){
+  e=e||window.event; var t=e.target||e.srcElement, tip=$("actTip");
+  var b=t&&t.getAttribute?t.getAttribute("data-actb"):null;
+  if(b==null){ tip.style.display="none"; return; }
+  var P=actPanel(t.getAttribute("data-actp")), D=ACT_BINS[P.id], i=+b, h='<div class="tt">'+esc(hourLabel(D.lo+i*D.step,D.step))+(D.step===1?" (1 h)":"")+" "+(ACT_CLOCK==="local"?"device clock":"UTC")+'</div>';
+  for(var s=0;s<P.series.length;s++){ var off=ACT_OFF[P.id+"."+P.series[s][0]];
+    h+='<div style="white-space:nowrap'+(off?';opacity:.5':'')+'"><span class="tk" style="background:'+ACT_COLORS[s]+'"></span><b>'+esc(actFmt(D.vals[s][i],P.unit))+'</b> <span class="muted">'+esc(P.series[s][1])+(off?" (hidden)":"")+'</span></div>'; }
+  if(D.cov) h+='<div class="muted" style="margin-top:3px">'+(D.cov[i]?(nf(D.cov[i])+" log lines of this type"):"NO log lines of this type - no data, not no activity")+'</div>';
+  h+='<div class="muted" style="margin-top:3px">click: open the table for this '+(D.step===1?"day":"day")+'</div>';
+  tip.innerHTML=h; tip.style.display="block";
+  var x=(e.clientX||0)+14, y=(e.clientY||0)+14, z=curZoom();
+  var sx=document.documentElement.scrollLeft||document.body.scrollLeft||0, sy=document.documentElement.scrollTop||document.body.scrollTop||0;
+  var vw=(document.documentElement.clientWidth||1200);
+  if(x+260>vw) x=(e.clientX||0)-270;
+  tip.style.left=Math.round((x+sx)/z)+"px"; tip.style.top=Math.round((y+sy)/z)+"px";
+}
+/* click a bar: the date window becomes the UTC day(s) the interval covers, then the related table opens. The tables
+   filter by UTC calendar day; on the device clock the interval is widened by the largest possible offset either way. */
+function actOpen(pid, bin){
+  var P=actPanel(pid), D=ACT_BINS[pid]; if(!P) return;
+  if(D && bin!=null){
+    var a=(D.lo+bin*D.step)*3600000, z=(D.lo+(bin+1)*D.step)*3600000-1;
+    if(ACT_CLOCK==="local"){ a-=14*3600000; z+=12*3600000; }
+    function day(ms){ var d=new Date(ms); function p(x){ return (x<10?"0":"")+x; } return d.getUTCFullYear()+"-"+p(d.getUTCMonth()+1)+"-"+p(d.getUTCDate()); }
+    $("dfrom").value=day(a); $("dto").value=day(z); DFROM=dayNum(day(a)); DTO=dayNum(day(z));
+    setStatus("Date window set to "+day(a)+(day(a)!==day(z)?(" .. "+day(z)):"")+" (UTC) from the "+P.title.toLowerCase()+" chart - clear all removes it","ok");
+  }
+  SUB=P.open[1]; setViewTab(P.open[0]);
+}
+
 /* ---------- views ---------- */
 var VIEWS=[
   {id:"ov", label:"Overview"},
+  {id:"act", label:"Activity over time"},
   {id:"adm", label:"Admin access", subs:[["admin_src","By source IP"],["admin_user","By username"],["admin_sessions","Successful logins / logouts"]]},
   {id:"cfg", label:"Config & system", subs:[["config_changes","Config changes"],["system_notable","Notable system events"],["event_summary","All event types"]]},
   {id:"vpn", label:"VPN", subs:[["vpn_ssl","SSL-VPN logins"],["vpn_ipsec","IPsec tunnels & peers"],["vpn_events","VPN events"]]},
@@ -1974,6 +2204,7 @@ var TABLE_NOTES={
 }; for(var k in add){ if(add.hasOwnProperty(k) && add[k] && !TABLE_NOTES[k]) TABLE_NOTES[k]=add[k]; } })();
 var VIEW_TIPS={
   ov:"Overview: run summary, findings generated from every table, and log coverage",
+  act:"Activity over time: hourly / daily charts of admin and VPN logins, user authentication, traffic volume, sessions, antivirus, IPS, web filter, risky apps, config changes and IOC hits - with coverage gaps hatched",
   adm:"Admin access: every admin login attempt to the firewall itself - by source, by username, and each successful session",
   cfg:"Config & system: every configuration change (who, from where, old -> new), notable system events, and an inventory of every event type",
   vpn:"VPN: SSL-VPN logins per user and source country, IPsec tunnels and peers, and the VPN event stream",
@@ -2058,8 +2289,10 @@ function renderBars(){
 function renderAll(){
   if(!DATA) return;
   renderBars();
-  var ov=(VIEW==="ov");
-  showEl("ovPane",ov); showEl("tblCard",!ov); if(ov){ showEl("detailCard",false); renderOverview(); } else renderTable();
+  var ov=(VIEW==="ov"), ac=(VIEW==="act");
+  showEl("ovPane",ov); showEl("actPane",ac); showEl("tblCard",!ov&&!ac);
+  if(ov||ac) showEl("detailCard",false);
+  if(ov) renderOverview(); else if(ac){ $("afrom").value=$("dfrom").value; $("ato").value=$("dto").value; renderActivity(); } else renderTable();
 }
 
 var SEVTIP=["INFO - context, no action needed","LOW - worth knowing","MEDIUM - worth a look","HIGH - check this","CRITICAL - check this first"];
@@ -2253,6 +2486,40 @@ function applyFreeze(){ var sc=$("tblScroll"); if(!sc) return; var ths=$("tbl").
 
 /* ---------- detail pane ---------- */
 var DETROW=-1;
+/* ---------- raw log line -> fields (same key=value rules as the engine) ---------- */
+function parseKv(line){
+  var s=String(line||""), out=[], i=s.search(/(^|[\s>,])(date|logver|itime|eventtime|devname|logid|time)=/); if(i<0) return out; if(i>0) i++;
+  var n=s.length;
+  while(i<n){
+    while(i<n && (s.charAt(i)===" "||s.charAt(i)==="\t")) i++;
+    var ks=i; while(i<n && s.charAt(i)!=="=" && s.charAt(i)!==" ") i++;
+    if(i>=n) break; if(s.charAt(i)===" ") continue;
+    var k=s.substring(ks,i), v; i++;
+    if(i<n && s.charAt(i)==='"'){ i++; var vs=i; while(i<n){ var c=s.charAt(i); if(c==="\\" && i+1<n){ i+=2; continue; } if(c==='"') break; i++; } v=s.substring(vs,i).replace(/\\"/g,'"'); i++; }
+    else { var vs2=i; while(i<n && s.charAt(i)!==" ") i++; v=s.substring(vs2,i); }
+    if(k) out.push([k,v]);
+  }
+  return out;
+}
+/* the fields an investigator reads first, in reading order - everything else follows alphabetically */
+var KEY_FIELDS=["virus","filename","url","hostname","action","msg","logdesc","status","eventtype","subtype","level","dtype","catdesc","app","appcat","apprisk","attack","severity","analyticscksum","filehash","filesize","direction","service",
+  "srcip","srcport","srccountry","dstip","dstport","dstcountry","user","group","method","ui","profile","cfgpath","cfgobj","cfgattr","remip","tunneltype","vpntunnel","tunnelip","reason","sentbyte","rcvdbyte","duration","policyid","policyname","sessionid","devname","vd","date","time","tz"];
+var FIELD_TIPS={virus:"Malware name FortiGuard assigned",filename:"The file the detection was in",dtype:"Detection engine (av-engine, ...)",analyticscksum:"SHA-256 of the file (FortiSandbox / analytics checksum) - search it in VirusTotal",
+  filehash:"Hash of the file",url:"Full URL requested",catdesc:"FortiGuard web category",attack:"IPS signature name",cfgattr:"Attributes changed, old->new",ui:"How the admin was connected",
+  quarskip:"Why the file was not quarantined",crscore:"Client-reputation score added for this event",crlevel:"Client-reputation level",msg:"FortiOS message text"};
+function rawFieldsHtml(raw){
+  var kv=parseKv(raw); if(!kv.length) return "";
+  var first=[], rest=[], seen={}, i, j;
+  for(i=0;i<KEY_FIELDS.length;i++){ for(j=0;j<kv.length;j++){ if(kv[j][0]===KEY_FIELDS[i] && !seen["#"+j]){ first.push(kv[j]); seen["#"+j]=1; } } }
+  for(j=0;j<kv.length;j++) if(!seen["#"+j]) rest.push(kv[j]);
+  rest.sort(function(a,b){ return a[0]<b[0]?-1:(a[0]>b[0]?1:0); });
+  function line(p){ var cls=""; if(IOCS.length){ var lv=String(p[1]).toLowerCase(); for(var k=0;k<IOCS.length;k++) if(lv.indexOf(IOCS[k])>=0) cls="hl-ioc"; }
+    return '<div><b title="'+esc(FIELD_TIPS[p[0]]||("Log field "+p[0]))+'">'+esc(p[0])+'</b><span class="'+cls+'">'+esc(p[1])+'</span></div>'; }
+  var h='<div class="muted" style="font-size:11px;margin:8px 0 2px;text-transform:uppercase;letter-spacing:.5px" title="The RawLine above, split into its FortiOS key=value fields">Log line fields - '+kv.length+' fields, key fields first</div><div class="dl">';
+  for(i=0;i<first.length;i++) h+=line(first[i]);
+  if(rest.length){ h+='<div style="margin-top:4px;color:#6e7681">- other fields -</div>'; for(i=0;i<rest.length;i++) h+=line(rest[i]); }
+  return h+'</div>';
+}
 function renderDetail(ri){
   var t=curTable(); if(!t || ri<0 || ri>=t.rows.length) return; DETROW=ri;
   var row=t.rows[ri], fl=t.flags[ri], h='<div class="dl">';
@@ -2261,6 +2528,7 @@ function renderDetail(ri){
     var cls=""; if(IOCS.length){ var lv=s.toLowerCase(); for(var k=0;k<IOCS.length;k++) if(lv.indexOf(IOCS[k])>=0) cls="hl-ioc"; }
     h+='<div><b>'+esc(t.cols[c])+'</b><span class="'+cls+'">'+esc(s)+'</span></div>'; }
   h+="</div>";
+  if(t.ix["RawLine"]!=null) h+=rawFieldsHtml(row[t.ix["RawLine"]]);
   var pivots=[], seen={};
   for(var c3=0;c3<t.cols.length;c3++){ if(/IP$/.test(t.cols[c3]) && row[c3] && !seen[row[c3]]){ seen[row[c3]]=1; pivots.push(row[c3]); } }
   if(pivots.length){ h+='<div class="muted" style="font-size:12px;margin-top:6px">Search this value in the current table: '; for(var p=0;p<pivots.length;p++) h+='<span class="lnk mono" data-q="'+esc(pivots[p])+'" title="Put this value in the search box (this table only)">'+esc(pivots[p])+'</span> &nbsp; ';
@@ -2384,6 +2652,12 @@ function init(){
   $("pTo").onchange=function(){ var x=trimStr(this.value); if(/^\d{4}-\d{2}-\d{2}$/.test(x)){ $("dto").value=x; DTO=dayNum(x); } };
   $("clearBtn").onclick=function(){ $("q").value=""; $("dfrom").value=""; $("dto").value=""; QUERY=""; DFROM=0; DTO=0; setSev("all"); PUBONLY=false; THRU=false; OFFHRS=false; CTRY=""; MINBYTES=0; try{ $("fBytes").value="0"; }catch(e){} $("pivot").value=""; setPivot(""); };
   $("exportBtn").onclick=exportView;
+  $("actGran").onchange=function(){ ACT_GRAN=this.value; renderActivity(); };
+  $("actClock").onchange=function(){ ACT_CLOCK=this.value; renderActivity(); };
+  $("afrom").onchange=function(){ $("dfrom").value=this.value; DFROM=dayNum(this.value); renderActivity(); };
+  $("ato").onchange=function(){ $("dto").value=this.value; DTO=dayNum(this.value); renderActivity(); };
+  $("actClear").onclick=function(){ $("afrom").value=""; $("ato").value=""; $("dfrom").value=""; $("dto").value=""; DFROM=0; DTO=0; renderActivity(); };
+  $("actPanels").onmousemove=actTip; $("actPanels").onmouseout=function(){ $("actTip").style.display="none"; };
   $("fullCsvBtn").onclick=openFullCsv;
   $("copyBtn").onclick=copyNotes;
   $("detClose").onclick=function(){ showEl("detailCard",false); };
@@ -2397,6 +2671,13 @@ function init(){
     if(fi!=null && fi!==""){ var f=FINDINGS[parseInt(fi,10)]; if(f && f.view){ SUB=f.sub; setSev("all");
       if(f.q){ $("q").value=f.q; QUERY=f.q.toLowerCase(); } setViewTab(f.view); } return; }
     if(t && t.getAttribute && t.getAttribute("data-resweep")){ resweep(); return; }
+    if(t && t.getAttribute){
+      var as=t.getAttribute("data-actser"); if(as){ ACT_OFF[as]=!t.checked; renderActivity(); return; }
+      var am=t.getAttribute("data-actmeth"); if(am){ ACT_METHODS[am]=!!t.checked; renderActivity(); return; }
+      var at=t.getAttribute("data-acttbl"); if(at){ ACT_TBL[at]=!ACT_TBL[at]; renderActivity(); return; }
+      var ao=t.getAttribute("data-actopen"); if(ao){ actOpen(ao, null); return; }
+      var ab=t.getAttribute("data-actb"); if(ab!=null && ab!==""){ actOpen(t.getAttribute("data-actp"), +ab); return; }
+    }
     if(t && t.getAttribute && t.getAttribute("data-pivot")){ setPivot(t.getAttribute("data-pivot")); setStatus("Pivot set to "+t.getAttribute("data-pivot")+" - the tab buttons show where it appears","ok"); return; }
     if(t && t.getAttribute && t.getAttribute("data-usehost")){ $("hostName").value=t.getAttribute("data-usehost"); HOST_TOUCHED=true; HOST_LOCK=false; syncOutDir(); showEl("hostHint",false);
       setStatus("Hostname set to "+$("hostName").value+(DATA?" - re-process to write the run under this name.":""),"ok"); return; }
@@ -2537,12 +2818,14 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
     </ul>
     <h3>Tabs</h3>
     <ul>
+      <li><b>Activity over time</b> - hourly / daily stacked bars for admin logins (success / failed / lockouts, filterable by HTTPS / SSH / console), VPN logins, user authentication, traffic volume, sessions, antivirus, IPS, malicious web categories, risky applications, config changes and IOC hits. Toggle any series in its legend; hover a bar for exact counts; click it to open the related table for that day. Hours with no lines of the log type are hatched - no data, not no activity. Clock: UTC or the firewall's own. Each chart has a table view. These are pre-counted totals: pivot and table filters do not apply.</li>
       <li><b>Admin access</b> - every admin login attempt per source and per username, plus each successful login / logout. Failures from public IPs against a WAN address mean the management interface is exposed.</li>
       <li><b>Config &amp; system</b> - every configuration change (path, object, old&rarr;new attributes, who, from where), notable system events, and a count of every event type.</li>
       <li><b>VPN</b> - SSL-VPN logins per user and source (with country), IPsec per tunnel and peer (phase-1 errors from unknown peers = scanning), and the VPN event stream.</li>
       <li><b>User auth</b> - firewall user authentication (captive portal / LDAP / FSSO) per user, and failures per source (spraying).</li>
       <li><b>Traffic</b> - Internet destinations, internal sources, inbound from the Internet, what accepted inbound sessions (exposure), internal admin-port fan-out (lateral movement), ports &amp; services, the largest single uploads. Direction comes from the interface roles (lan / wan) so VPN overlays with odd addressing are classified correctly.</li>
       <li><b>Security profiles</b> - antivirus detections, IPS, application control (remote-access tools flagged), web filter by site and category, SSL inspection anomalies, other UTM.</li>
+      <li><b>Row detail of a raw log line</b> (IOC raw-line matches) splits the line into its FortiOS fields, evidence first - virus, file name, URL, hostname, action, message - then the rest alphabetically, so nothing has to be read out of the raw string.</li>
       <li><b>IOC hits</b> - two layers. <b>Raw-line sweep</b>: with an IOC list set before processing, every raw log line is swept (whole-token match) and each hit keeps the full line. <b>Matches in tables</b>: terms applied at any time - including after processing - immediately gather every result-table row that contains them. When you Apply terms the run was not swept for, the app offers to re-sweep the raw logs.</li>
       <li><b>Timeline</b> - admin sessions, config changes, VPN logins, AV / IPS / app-control first sightings and IOC hits on one stream. <b>Sources</b> - files read, coverage per log type, lines per day, device names.</li>
     </ul>
